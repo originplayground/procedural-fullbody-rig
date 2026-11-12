@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Rigged Arm · three.js</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Procedural Figure · three.js</title>
 <style>
-  :root { --ink:#f2f4f9; --dim:#aeb5c6; --glass:rgba(13,15,21,.56); --line:rgba(255,255,255,.13); }
+  :root { --ink:#f2f4f9; --dim:#aeb5c6; --glass:rgba(13,15,21,.58); --line:rgba(255,255,255,.13); }
   * { box-sizing:border-box; }
   html,body { margin:0; height:100%; overflow:hidden; color:var(--ink);
     background:radial-gradient(120% 95% at 62% 32%, #1b1f28 0%, #0a0b0f 100%);
@@ -13,41 +13,7 @@
   canvas { position:fixed; inset:0; display:block; touch-action:none; }
   .glass { background:var(--glass); border:1px solid var(--line); backdrop-filter:blur(18px) saturate(1.3); -webkit-backdrop-filter:blur(18px) saturate(1.3);
     box-shadow:0 8px 30px rgba(0,0,0,.28); }
-
-  /* segmented controls */
-  .seg { display:flex; gap:2px; padding:4px; border-radius:999px; }
-  .seg button { all:unset; cursor:pointer; padding:8px 15px; border-radius:999px; color:var(--dim); font-size:13px; font-weight:500;
-    white-space:nowrap; transition:background .18s, color .18s; -webkit-tap-highlight-color:transparent; }
-  .seg button:hover { color:var(--ink); }
-  .seg button.on { background:rgba(255,255,255,.95); color:#0d0f14; font-weight:600; }
-  .seg button:focus-visible { outline:2px solid #fff; outline-offset:2px; }
-
-  #top { position:fixed; top:16px; left:18px; right:18px; display:flex; justify-content:space-between; align-items:center; gap:12px; pointer-events:none; }
-  #top > * { pointer-events:auto; }
-  #brand { font-size:15px; font-weight:650; letter-spacing:.01em; text-shadow:0 1px 10px rgba(0,0,0,.55); }
-  #brand span { display:block; font-size:12px; font-weight:400; color:rgba(255,255,255,.72); }
-
-  #dock { position:fixed; left:0; right:0; bottom:20px; padding:0 12px; display:flex; flex-direction:column; align-items:center; gap:10px; pointer-events:none; }
-  #hint { margin:0; max-width:540px; text-align:center; font-size:12.5px; color:rgba(255,255,255,.86); text-shadow:0 1px 8px rgba(0,0,0,.7); min-height:2.9em;
-    display:flex; align-items:flex-end; justify-content:center; }
-  #modes { pointer-events:auto; max-width:100%; overflow-x:auto; scrollbar-width:none; }
-  #modes::-webkit-scrollbar { display:none; }
-
-  #hud { position:fixed; left:18px; bottom:20px; padding:10px 14px; border-radius:14px; display:grid; grid-template-columns:auto auto; gap:2px 16px;
-    font-variant-numeric:tabular-nums; font-size:12px; }
-  #hud span:nth-child(odd) { color:var(--dim); }
-  #hud span:nth-child(even) { text-align:right; min-width:38px; }
-  #loading { position:fixed; inset:0; display:grid; place-items:center; color:var(--dim); font-size:14px; letter-spacing:.02em; }
-
-  @media (max-width:1180px) { #hud { display:none; } }
-  @media (max-width:600px) {
-    #top { top:max(12px, env(safe-area-inset-top)); left:14px; right:10px; }
-    #brand span { display:none; }
-    #views button { padding:8px 12px; }
-    #dock { bottom:max(14px, env(safe-area-inset-bottom)); padding:0 8px; }
-    #hint { font-size:12px; padding:0 10px; }
-    #modes button { padding:10px 15px; }
-  }
+  #loading { position:fixed; inset:0; display:grid; place-items:center; color:var(--dim); font-size:14px; letter-spacing:.02em; z-index:5; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -57,21 +23,7 @@
 </script>
 </head>
 <body>
-<div id="loading">Building the hand…</div>
-<div id="top" class="ui">
-  <div id="brand">Procedural arm<span>rigged, skinned and animated in code</span></div>
-  <div id="views" class="seg glass"></div>
-</div>
-<div id="dock" class="ui">
-  <p id="hint"></p>
-  <div id="modes" class="seg glass"></div>
-</div>
-<div id="hud" class="ui glass">
-  <span>Elbow flex</span><span id="h-elbow"></span>
-  <span>Forearm twist</span><span id="h-twist"></span>
-  <span>Wrist flex</span><span id="h-wflex"></span>
-  <span>Wrist deviation</span><span id="h-wdev"></span>
-</div>
+<div id="loading">Building the figure…</div>
 
 <script type="module">
 import * as THREE from 'three';
@@ -79,78 +31,14 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
-const V3 = THREE.Vector3, Quat = THREE.Quaternion;
+/* ═══════════════════════════════ §0  MATH HELPERS ═══════════════════════════════ */
+const V3 = THREE.Vector3, Quat = THREE.Quaternion, M4 = THREE.Matrix4;
 const AX = new V3(1,0,0), AY = new V3(0,1,0), AZ = new V3(0,0,1);
 const clamp = THREE.MathUtils.clamp, lerp = THREE.MathUtils.lerp;
 const smooth = (a,b,x) => { const t = clamp((x-a)/(b-a),0,1); return t*t*(3-2*t); };
 const gauss = (x,c,s) => Math.exp(-(((x-c)/s)**2));
-const DEG = 180/Math.PI;
-
-/* ───────────────────────── proportions (metres) ─────────────────────────
-   Bind pose: left arm in T-pose along +X, palm down (-Y), thumb forward (+Z).
-   Elbow hinge axis = local Y, flexion swings the forearm toward +Z.        */
-const L1 = 0.30, L2 = 0.26, WX = L1 + L2, PE = WX + 0.083;
-
-/* ───────────────────────── skeleton ───────────────────────── */
-const bones = [];
-function mkBone(name, parent, pos, quat, len) {
-  const b = new THREE.Bone(); b.name = name; b.position.fromArray(pos);
-  if (quat) b.quaternion.copy(quat);
-  if (parent) parent.add(b);
-  b.userData = { rest: b.quaternion.clone(), len, index: bones.length };
-  bones.push(b); return b;
-}
-const root  = mkBone('shoulder', null,  [0,0,0], null, 0);
-const upper = mkBone('upperArm', root,  [0,0,0], null, L1);
-const half  = mkBone('elbowHalf', upper,[L1,0,0], null, 0);       // rotates half the elbow angle: keeps volume
-const fore  = mkBone('forearm',  upper, [L1,0,0], null, L2/3);
-const tw1   = mkBone('twist1',   fore,  [L2/3,0,0], null, L2/3);  // pronation is spread over three bones
-const tw2   = mkBone('twist2',   tw1,   [L2/3,0,0], null, L2/3);
-const tw3   = mkBone('twist3',   tw2,   [L2/3,0,0], null, 0);
-const hand  = mkBone('hand',     tw3,   [0,0,0], null, 0.086);
-const B = { root:0, upper:1, half:2, fore:3, tw1:4, tw2:5, tw3:6, hand:7 };
-
-const thumbQuat = (() => {
-  const x = new V3(0.80,-0.06,0.60).normalize();
-  const c = new V3(0.10,-0.25,-0.95);                  // direction the thumb tip travels when it flexes
-  const y = c.addScaledVector(x, -c.dot(x)).normalize().negate();
-  const z = new V3().crossVectors(x, y);
-  return new Quat().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
-})();
-const yaw = a => new Quat().setFromAxisAngle(AY, -a);
-const FINGERS = [
-  { name:'thumb',  base:[0.018,-0.016,0.022], quat:thumbQuat, fanFix:0, len:[0.046,0.033,0.025], r:0.0105, thumb:true },
-  { name:'index',  base:[0.086,0, 0.0300], quat:yaw( 0.15), fanFix: 0.08, len:[0.040,0.024,0.021], r:0.0092 },
-  { name:'middle', base:[0.089,0, 0.0095], quat:yaw( 0.04), fanFix: 0.04, len:[0.044,0.027,0.022], r:0.0095 },
-  { name:'ring',   base:[0.084,0,-0.0105], quat:yaw(-0.07), fanFix: 0.00, len:[0.040,0.025,0.021], r:0.0089 },
-  { name:'pinky',  base:[0.075,0,-0.0295], quat:yaw(-0.21), fanFix:-0.05, len:[0.031,0.019,0.018], r:0.0079 },
-];
-for (const F of FINGERS) {
-  const b0 = mkBone(F.name+'1', hand, F.base, F.quat, F.len[0]);
-  const b1 = mkBone(F.name+'2', b0, [F.len[0],0,0], null, F.len[1]);
-  const b2 = mkBone(F.name+'3', b1, [F.len[1],0,0], null, F.len[2]);
-  F.bones = [b0,b1,b2];
-  // half-angle helpers at each joint so knuckles keep their volume when the finger curls
-  F.helpers = [mkBone(F.name+'H1', hand, F.base, F.quat, 0), mkBone(F.name+'H2', b0, [F.len[0],0,0], null, 0), mkBone(F.name+'H3', b1, [F.len[1],0,0], null, 0)];
-  for (const hb of F.helpers) hb.userData.helper = true;
-  const L = F.len[0]+F.len[1]+F.len[2], r = F.r;
-  F.rk = F.thumb
-    // the first thumb bone (metacarpal) lives inside the palm: it is wrapped in the fat thenar pad, and only
-    // the last two bones stick out as the free thumb
-    ? [[-0.014,0.0140],[0,0.0180],[0.020,0.0180],[0.034,0.0148],[F.len[0],0.0116],[F.len[0]+0.014,0.0094],[F.len[0]+F.len[1],0.0098],[F.len[0]+F.len[1]+0.011,0.0088],[L,0.0084]]
-    : [[-0.012,r*1.05],[0,r*1.04],[F.len[0],r],[F.len[0]+F.len[1],r*0.93],[L,r*0.85]];
-  F.tipR = key(F.rk, L);
-}
-root.updateMatrixWorld(true);
-// which way does a +Y rotation of the thumb base move it away from the fingers?
-{
-  const q = new Quat().setFromAxisAngle(AY, 0.3).premultiply(thumbQuat);
-  const d0 = new V3(1,0,0).applyQuaternion(thumbQuat), d1 = new V3(1,0,0).applyQuaternion(q);
-  FINGERS[0].spreadSign = d1.x < d0.x ? 1 : -1;
-}
-FINGERS[1].spreadSign = -1; FINGERS[2].spreadSign = -0.15; FINGERS[3].spreadSign = 0.9; FINGERS[4].spreadSign = 1.2;
-
-/* ───────────────────────── skin: procedural tubes with painted weights ───────────────────────── */
+const DEG = 180/Math.PI, PI = Math.PI;
+const noise = (t, s) => Math.sin(t*1.3+s)*0.5 + Math.sin(t*2.17+s*1.7)*0.3 + Math.sin(t*0.71+s*2.3)*0.2;
 function key(T, x) {            // cubic Hermite through a small table of [x, value]
   const n = T.length;
   if (x <= T[0][0]) return T[0][1];
@@ -162,6 +50,71 @@ function key(T, x) {            // cubic Hermite through a small table of [x, va
   const t2 = t*t, t3 = t2*t;
   return (2*t3-3*t2+1)*v0 + (t3-2*t2+t)*h*m0 + (-2*t3+3*t2)*v1 + (t3-t2)*h*m1;
 }
+const smin = (a, b, k) => { const h = Math.max(k - Math.abs(a-b), 0)/k; return Math.min(a, b) - h*h*k*0.25; };   // polynomial smooth minimum
+const smax = (a, b, k) => -smin(-a, -b, k);
+
+// Swing–twist split of a rotation q about a unit axis given in the rest frame: q = swing · twist.
+// The twist is q's vector part projected on the axis (renormalised); the swing is what is left.
+function swingTwist(q, axis, swingOut, twistOut) {
+  const d = q.x*axis.x + q.y*axis.y + q.z*axis.z;
+  twistOut.set(axis.x*d, axis.y*d, axis.z*d, q.w);
+  if (twistOut.lengthSq() < 1e-12) twistOut.identity(); else twistOut.normalize();
+  swingOut.copy(q).multiply(_qa.copy(twistOut).invert());
+}
+const _qa = new Quat();
+
+/* Damped springs. Every animated channel goes through one: x chases t with stiffness w (rad/s) and damping ratio z. */
+function springBank() {
+  const ALL = [];
+  const sp = (x, w, z=1) => { const s = { x, v:0, t:x, w, z }; ALL.push(s); return s; };
+  class VS {
+    constructor(x,y,z,w,zeta=1) { this.s = [sp(x,w,zeta), sp(y,w,zeta), sp(z,w,zeta)]; }
+    to(v, w) { this.s[0].t = v.x; this.s[1].t = v.y; this.s[2].t = v.z; if (w) for (const s of this.s) s.w = w; }
+    get(v) { return v.set(this.s[0].x, this.s[1].x, this.s[2].x); }
+    snap(v) { for (let i = 0; i < 3; i++) { const s = this.s[i]; s.x = s.t = v.getComponent(i); s.v = 0; } }
+  }
+  const step = h => { for (const s of ALL) { s.v += (-2*s.z*s.w*s.v - s.w*s.w*(s.x-s.t))*h; s.x += s.v*h; } };
+  const run = dt => { const n = Math.max(1, Math.ceil(dt/0.006)); for (let i = 0; i < n; i++) step(dt/n); };
+  return { sp, VS, run, ALL };
+}
+
+/* ═══════════════════════════════ §1  PROPORTIONS ═══════════════════════════════
+   Metres. Bind pose: the figure faces +Z, its left is +X, the floor is y = 0. Arms in a T-pose, legs straight.
+   About 1.76 m tall with a 0.235 m head: 7.5 heads.                                                       */
+const J = {
+  pelvis:[0,0.960,-0.010], spine1:[0,1.045,-0.022], spine2:[0,1.155,-0.030], spine3:[0,1.270,-0.034],
+  neck:[0,1.442,-0.030], head:[0,1.562,-0.008],
+  clav:[0.022,1.418,0.030], shoulder:[0.178,1.425,-0.016],
+  hip:[0.088,0.905,0.000], knee:[0.090,0.490,0.008], ankle:[0.092,0.080,-0.012], ball:[0.096,0.022,0.128],
+  eye:[0.0315,1.657,0.076],
+};
+const THIGH = Math.hypot(J.hip[1]-J.knee[1], J.hip[2]-J.knee[2], J.hip[0]-J.knee[0]);
+const SHIN  = Math.hypot(J.knee[1]-J.ankle[1], J.knee[2]-J.ankle[2], J.knee[0]-J.ankle[0]);
+const ANKLE_H = J.ankle[1], HEEL_Z = -0.062, BALL_Z = J.ball[2] - J.ankle[2];   // foot geometry relative to the ankle
+const mirrorX = (p, s) => [p[0]*s, p[1], p[2]];
+
+/* ═══════════════════════════════ §2  ARM + HAND RIG ═══════════════════════════════
+   This is the original single-arm rig, kept as it was and wrapped in makeArm() so each side gets its own bones,
+   springs and contact state. It works in ARM SPACE: the canonical left-arm frame of the original page
+   (T-pose along +X, palm down -Y, thumb forward +Z, elbow hinge = local Y, flexion swings the forearm to +Z).
+   The left arm's arm space is the chest frame placed at the shoulder; the right arm's is the same frame seen
+   through a mirror (x → -x). So the right arm runs exactly the same code and the same painted weights.        */
+const L1 = 0.30, L2 = 0.26, WX = L1 + L2, PE = WX + 0.083;
+const thumbQuat = (() => {
+  const x = new V3(0.80,-0.06,0.60).normalize();
+  const c = new V3(0.10,-0.25,-0.95);                  // direction the thumb tip travels when it flexes
+  const y = c.addScaledVector(x, -c.dot(x)).normalize().negate();
+  const z = new V3().crossVectors(x, y);
+  return new Quat().setFromRotationMatrix(new M4().makeBasis(x, y, z));
+})();
+const yaw = a => new Quat().setFromAxisAngle(AY, -a);
+const FINGER_DEFS = [
+  { name:'thumb',  base:[0.018,-0.016,0.022], quat:thumbQuat, fanFix:0, len:[0.046,0.033,0.025], r:0.0105, thumb:true },
+  { name:'index',  base:[0.086,0, 0.0300], quat:yaw( 0.15), fanFix: 0.08, len:[0.040,0.024,0.021], r:0.0092 },
+  { name:'middle', base:[0.089,0, 0.0095], quat:yaw( 0.04), fanFix: 0.04, len:[0.044,0.027,0.022], r:0.0095 },
+  { name:'ring',   base:[0.084,0,-0.0105], quat:yaw(-0.07), fanFix: 0.00, len:[0.040,0.025,0.021], r:0.0089 },
+  { name:'pinky',  base:[0.075,0,-0.0295], quat:yaw(-0.21), fanFix:-0.05, len:[0.031,0.019,0.018], r:0.0079 },
+];
 function stations(x0, x1, n, { capStart=0, capEnd=0, capN=6 } = {}) {
   const s = [];
   if (capStart) for (let i = capN; i >= 1; i--) { const t = i/capN*Math.PI/2; s.push({ x:x0-capStart*Math.sin(t), xe:x0, k:Math.cos(t), end:-1 }); }
@@ -169,35 +122,10 @@ function stations(x0, x1, n, { capStart=0, capEnd=0, capN=6 } = {}) {
   if (capEnd) for (let i = 1; i <= capN; i++) { const t = i/capN*Math.PI/2; s.push({ x:x1+capEnd*Math.sin(t), xe:x1, k:Math.cos(t), end:1 }); }
   return s;
 }
-const G = { pos:[], idx:[], si:[], sw:[], m0:[], m1:[], col:[] };
-const boneColor = bones.map((b,i) => new THREE.Color().setHSL((i*0.61803)%1, 0.75, 0.55));
-function addTube({ st, radial, section, frame, weights, morph }) {
-  const base = G.pos.length/3, v = new V3(), c = new THREE.Color();
-  for (const s of st) {
-    for (let j = 0; j < radial; j++) {
-      const th = j/radial*Math.PI*2, p = section(s, th);
-      const w = weights(s.x, th).filter(e => e[1] > 1e-4).sort((a,b) => b[1]-a[1]).slice(0,4);
-      const sum = w.reduce((a,e) => a+e[1], 0);
-      c.setRGB(0,0,0); for (const [bi,bw] of w) { const k = boneColor[bi]; c.r += k.r*bw/sum; c.g += k.g*bw/sum; c.b += k.b*bw/sum; }
-      v.set(s.x+p[0], p[1], p[2]); if (frame) v.applyMatrix4(frame);
-      G.pos.push(v.x, v.y, v.z);
-      for (let k = 0; k < 4; k++) { G.si.push(w[k] ? w[k][0] : 0); G.sw.push(w[k] ? w[k][1]/sum : 0); }
-      G.col.push(c.r, c.g, c.b);
-      const m = morph ? morph(s, th, p) : [0,0,0,0,0,0];
-      G.m0.push(m[0],m[1],m[2]); G.m1.push(m[3],m[4],m[5]);
-    }
-  }
-  for (let i = 0; i < st.length-1; i++) for (let j = 0; j < radial; j++) {
-    const jn = (j+1)%radial, a = base+i*radial+j, b = a+radial, d = base+i*radial+jn, cc = d+radial;
-    G.idx.push(a,cc,b, a,d,cc);
-  }
-}
-
-// ── arm + palm: one continuous tube. θ=0 is +Y (dorsal/top), θ=π/2 is +Z (front / thumb side).
+// ── arm + palm cross-section: θ=0 is +Y (dorsal/top), θ=π/2 is +Z (front / thumb side).
 const HY = [[-0.03,.055],[0.05,.057],[0.13,.047],[0.22,.043],[0.28,.0415],[0.30,.042],[0.36,.044],[0.45,.034],[0.52,.0235],[0.548,.0195],[0.59,.0155],[0.63,.0140],[0.643,.0130]];
 const HZ = [[-0.03,.054],[0.05,.055],[0.13,.051],[0.22,.046],[0.28,.043],[0.30,.042],[0.36,.042],[0.45,.034],[0.52,.0290],[0.548,.0285],[0.59,.0390],[0.63,.0430],[0.643,.0425]];
 const NN = [[0.45,2],[0.548,2.3],[0.59,2.8],[0.63,3.2],[0.643,3.0]];
-const PI = Math.PI;
 const BUMPS = [
   { x:0.05,  s:0.070, th:0,          a:0.10 },  // deltoid
   { x:0.15,  s:0.065, th:PI/2,       a:0.15 },  // biceps
@@ -209,292 +137,15 @@ const BUMPS = [
   { x:WX+0.034, s:0.028, th:PI-0.8,  a:0.28 },  // thenar
   { x:WX+0.035, s:0.028, th:PI+0.8,  a:0.20 },  // hypothenar
 ];
-function armSection(s, th) {
-  const x = s.xe, e = 2/key(NN, x), c = Math.cos(th), sn = Math.sin(th);
-  let y = key(HY,x)*Math.sign(c)*Math.abs(c)**e, z = key(HZ,x)*Math.sign(sn)*Math.abs(sn)**e, m = 1;
-  for (const b of BUMPS) m += b.a*gauss(x,b.x,b.s)*Math.max(0, Math.cos(th-b.th))**2;
-  y *= m; z *= m;
-  if (s.end === 1) { y *= s.k; z *= 0.72+0.28*s.k; } else if (s.end === -1) { y *= s.k; z *= s.k; }
-  const t = smooth(WX+0.03, PE, s.x), dx = t*(0.2*z - 3.0*z*z);
-  if (c > 0 && x > WX+0.04) for (let f = 1; f < 5; f++) {      // metacarpal heads: a knuckle behind each finger
-    const b = FINGERS[f].base; y += 0.0038*s.k*gauss(s.x+dx-WX, b[0]-0.005, 0.009)*gauss(z, b[2], 0.0075);
-  }
-  return [dx, y, z];                 // knuckle line is an arc, not a straight cut
+// Signed distance to the arm tube itself (no fingers, no knuckle line). The body uses it for the shoulder stub, so
+// the torso can blend into exactly the surface the arm tube starts with.
+function armTubeSDF(x, y, z) {
+  const xc = clamp(x, -0.03, 0.30), hy = key(HY,xc), hz = key(HZ,xc), n = 2;
+  const ay = Math.abs(y)/hy, az = Math.abs(z)/hz, rho = Math.hypot(ay, az);
+  const th = Math.atan2(Math.sign(z)*az, Math.sign(y)*ay);
+  let m = 1; for (const b of BUMPS) { const g = gauss(xc,b.x,b.s); if (g > 1e-3) m += b.a*g*Math.max(0, Math.cos(th-b.th))**2; }
+  return (rho/m - 1)*Math.min(hy,hz);
 }
-function armWeights(x, th) {
-  if (x < L1+0.075) {
-    const wr = 1 - smooth(-0.035, 0.07, x);
-    // The blend width varies around the elbow. On the inside of the bend the two segments stay almost rigid,
-    // so they simply press into each other along a clean crease (blending there drags skin through the joint
-    // and leaves a pit). On the outside the blend is wide, so the skin stretches smoothly over the point.
-    const k = (1 - Math.sin(th))/2, w = lerp(0.010, 0.075, k*k*(3-2*k));
-    const eu = 1 - smooth(L1-w, L1, x), ef = smooth(L1, L1+w, x);
-    return [[B.root, eu*wr], [B.upper, eu*(1-wr)], [B.half, 1-eu-ef], [B.fore, ef]];
-  }
-  const N = [[L1+0.075,B.fore],[L1+0.13,B.tw1],[L1+0.19,B.tw2],[WX-0.022,B.tw3]];
-  let out = [[B.tw3,1]];
-  for (let i = 0; i < 3; i++) if (x < N[i+1][0]) { const t = smooth(N[i][0], N[i+1][0], x); out = [[N[i][1],1-t],[N[i+1][1],t]]; break; }
-  const hw = smooth(WX-0.022, WX+0.022, x);
-  out = out.map(([b,w]) => [b, w*(1-hw)]); out.push([B.hand, hw]);
-  return out;
-}
-addTube({
-  st: stations(-0.03, WX-0.04, 108, { capStart:0.05, capN:7 }), radial: 36,
-  section: armSection, weights: armWeights,
-  morph: (s, th, p) => {                               // 0: biceps contraction, 1: forearm tension
-    if (s.end) return [0,0,0,0,0,0];
-    const l = Math.hypot(p[1],p[2]) || 1, ny = p[1]/l, nz = p[2]/l;
-    const a = 0.014*gauss(s.xe,0.165,0.055)*Math.max(0, Math.cos(th-PI/2))**1.5;
-    const b = 0.0085*gauss(s.xe,0.375,0.06);
-    return [0,ny*a,nz*a, 0,ny*b,nz*b];
-  },
-});
-// ── hand: one seamless skin. The palm, the four fingers and the thumb are each described as a distance field;
-// they are blended where they meet (so finger roots, webs and the thumb pad flow into the palm with no seam),
-// and the surface of the blended field is meshed. Each vertex then takes its bone weights from the parts it is near.
-function fingerWeights(F, x) {
-  const l0 = F.len[0], l1 = F.len[1], bi = F.bi, hi = F.hi;
-  const w0 = F.thumb ? 0.016 : 0.010, bw = Math.min(0.008, l1*0.45);
-  const hat = (c, w) => { const up = 1 - smooth(c-w, c, x), af = smooth(c, c+w, x); return [af, 1-up-af]; };
-  const [a0,m0] = hat(0, w0), [a1,m1] = hat(l0, bw), [a2,m2] = hat(l0+l1, bw);
-  return [[B.hand, 1-a0-m0], [hi[0], m0], [bi[0], a0*(1-a1-m1)], [hi[1], m1], [bi[1], a1*(1-a2-m2)], [hi[2], m2], [bi[2], a2]];
-}
-{
-  const smin = (a, b, k) => { const h = Math.max(k - Math.abs(a-b), 0)/k; return Math.min(a, b) - h*h*k*0.25; };
-  const fInv = FINGERS.map(F => F.bones[0].matrixWorld.clone().invert());
-  for (const F of FINGERS) { F.bi = F.bones.map(b => b.userData.index); F.hi = F.helpers.map(b => b.userData.index); F.L = F.len[0]+F.len[1]+F.len[2]; }
-  const lp = new V3(), df = [0,0,0,0,0], fx = [0,0,0,0,0]; let dpalm = 0;
-  function fingerSDF(f, x, y, z) {
-    const F = FINGERS[f], L = F.L, l0 = F.len[0], l1 = F.len[1];
-    lp.set(x, y, z).applyMatrix4(fInv[f]); fx[f] = lp.x;
-    if (lp.x < -0.04 || lp.x > L+0.03 || lp.y*lp.y + lp.z*lp.z > 0.0016) return 0.05;
-    const tipR = key(F.rk, L)*0.96, xa = clamp(lp.x, -0.014, L-tipR), yy = lp.y/0.94;
-    const c = Math.cos(Math.atan2(lp.z, lp.y)), kb = F.thumb ? 1.5 : 1;
-    let m = 1 + Math.max(0,c)*kb*(0.13*gauss(xa,l0,0.0055) + 0.11*gauss(xa,l0+l1,0.005) + (F.thumb ? 0 : 0.16*gauss(xa,0.001,0.007)));   // knuckles
-    m += 0.07*Math.max(0,-c)*gauss(xa, L-0.012, 0.008);                                                                              // finger pad
-    return Math.hypot(lp.x-xa, yy, lp.z) - key(F.rk, xa)*m;
-  }
-  function palmSDF(x, y, z) {
-    const xs = x - smooth(WX+0.03, PE, x)*(0.2*z - 3.0*z*z);          // undo the curved knuckle line
-    const xc = clamp(xs, WX-0.06, PE), hy = key(HY,xc), hz = key(HZ,xc), n = key(NN,xc);
-    const ay = Math.abs(y)/hy, az = Math.abs(z)/hz, rho = Math.pow(Math.pow(ay,n) + Math.pow(az,n), 1/n);
-    const th = Math.atan2(Math.sign(z)*Math.pow(az,n/2), Math.sign(y)*Math.pow(ay,n/2));
-    let m = 1; for (const b of BUMPS) { const g = gauss(xc,b.x,b.s); if (g > 1e-3) m += b.a*g*Math.max(0, Math.cos(th-b.th))**2; }
-    let d = (rho/m - 1)*Math.min(hy,hz);
-    if (y > 0 && xc > WX+0.04) for (let f = 1; f < 5; f++) { const b = FINGERS[f].base; d -= 0.0038*gauss(xs-WX, b[0]-0.005, 0.009)*gauss(z, b[2], 0.0075); }
-    const rr = 0.007, u = d+rr, v = xs-(PE+0.005)+rr;                  // rounded far edge
-    d = Math.min(Math.max(u, v), 0) + Math.hypot(Math.max(u,0), Math.max(v,0)) - rr;
-    return Math.max(d, (WX-0.052) - x);
-  }
-  function handSDF(x, y, z) {
-    dpalm = palmSDF(x, y, z) + 0.0007*(1 - smooth(WX-0.051, WX-0.040, x));   // sits a hair inside the arm tube where they overlap
-    let d = dpalm;
-    for (let f = 0; f < 5; f++) { df[f] = fingerSDF(f, x, y, z); d = Math.min(d, smin(dpalm, df[f], f === 0 ? 0.013 : 0.008)); }
-    return d;
-  }
-  // surface nets: one vertex per grid cell the surface passes through, one quad per grid edge it crosses
-  const h = 0.0013, ox = WX-0.056, oy = -0.064, oz = -0.060, nx = 202, ny = 78, nz = 122;
-  const val = new Float32Array(nx*ny*nz);
-  for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) val[i + nx*(j + ny*k)] = handSDF(ox+i*h, oy+j*h, oz+k*h);
-  const cx = nx-1, cy = ny-1, cell = new Int32Array(cx*cy*(nz-1)).fill(-1), base = G.pos.length/3;
-  const EDGES = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]], cvv = new Float32Array(8), col = new THREE.Color();
-  let nv = 0;
-  for (let k = 0; k < nz-1; k++) for (let j = 0; j < cy; j++) for (let i = 0; i < cx; i++) {
-    let mask = 0;
-    for (let c = 0; c < 8; c++) { const v = val[(i+(c&1)) + nx*((j+((c>>1)&1)) + ny*(k+((c>>2)&1)))]; cvv[c] = v; if (v < 0) mask |= 1<<c; }
-    if (mask === 0 || mask === 255) continue;
-    let sx = 0, sy = 0, sz = 0, cnt = 0;
-    for (const [a, b] of EDGES) {
-      const va = cvv[a], vb = cvv[b]; if ((va < 0) === (vb < 0)) continue;
-      const t = va/(va-vb);
-      sx += (a&1) + t*((b&1)-(a&1)); sy += ((a>>1)&1) + t*(((b>>1)&1)-((a>>1)&1)); sz += ((a>>2)&1) + t*(((b>>2)&1)-((a>>2)&1)); cnt++;
-    }
-    const px = ox+(i+sx/cnt)*h, py = oy+(j+sy/cnt)*h, pz = oz+(k+sz/cnt)*h;
-    cell[i + cx*(j + cy*k)] = base + nv++;
-    // bone weights: mix the palm's and each nearby finger's weights by how close this point is to each part
-    handSDF(px, py, pz);
-    const acc = new Map(), add = (list, m) => { for (const [bi, w] of list) if (w*m > 1e-5) acc.set(bi, (acc.get(bi) || 0) + w*m); };
-    add(armWeights(px, 0), Math.exp(-Math.max(dpalm,0)/0.0035));
-    for (let f = 0; f < 5; f++) if (df[f] < 0.03) add(fingerWeights(FINGERS[f], fx[f]), Math.exp(-Math.max(df[f],0)/0.0035));
-    const w = [...acc.entries()].sort((a, b) => b[1]-a[1]).slice(0, 4), sum = w.reduce((a, e) => a+e[1], 0);
-    col.setRGB(0,0,0); for (const [bi, bw] of w) { const kc = boneColor[bi]; col.r += kc.r*bw/sum; col.g += kc.g*bw/sum; col.b += kc.b*bw/sum; }
-    G.pos.push(px, py, pz); G.col.push(col.r, col.g, col.b); G.m0.push(0,0,0); G.m1.push(0,0,0);
-    for (let q = 0; q < 4; q++) { G.si.push(w[q] ? w[q][0] : 0); G.sw.push(w[q] ? w[q][1]/sum : 0); }
-  }
-  const quad = (a, b, c, d, flip) => { if (a < 0 || b < 0 || c < 0 || d < 0) return; if (flip) G.idx.push(a,c,b, a,d,c); else G.idx.push(a,b,c, a,c,d); };
-  const C = (i, j, k) => cell[i + cx*(j + cy*k)];
-  for (let k = 1; k < nz-1; k++) for (let j = 1; j < ny-1; j++) for (let i = 1; i < nx-1; i++) {
-    const a = val[i + nx*(j + ny*k)] < 0;
-    if (a !== (val[i+1 + nx*(j + ny*k)] < 0)) quad(C(i,j-1,k-1), C(i,j,k-1), C(i,j,k), C(i,j-1,k), !a);
-    if (a !== (val[i + nx*(j+1 + ny*k)] < 0)) quad(C(i-1,j,k-1), C(i-1,j,k), C(i,j,k), C(i,j,k-1), !a);
-    if (a !== (val[i + nx*(j + ny*(k+1))] < 0)) quad(C(i-1,j-1,k), C(i,j-1,k), C(i,j,k), C(i-1,j,k), !a);
-  }
-}
-const geo = new THREE.BufferGeometry();
-geo.setAttribute('position',   new THREE.Float32BufferAttribute(G.pos, 3));
-geo.setAttribute('color',      new THREE.Float32BufferAttribute(G.col, 3));
-geo.setAttribute('skinIndex',  new THREE.Uint16BufferAttribute(G.si, 4));
-geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(G.sw, 4));
-geo.setIndex(G.idx);
-geo.computeVertexNormals();
-geo.morphAttributes.position = [new THREE.Float32BufferAttribute(G.m0, 3), new THREE.Float32BufferAttribute(G.m1, 3)];
-geo.morphTargetsRelative = true;
-
-/* ───────────────────────── scene ───────────────────────── */
-const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
-document.body.prepend(renderer.domElement);
-const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(36, innerWidth/innerHeight, 0.05, 20);
-camera.position.set(0.98, 0.22, 1.50);
-
-const hemi = new THREE.HemisphereLight(0xc9d8ff, 0x3a2a24, 0.9); scene.add(hemi);
-const keyL = new THREE.DirectionalLight(0xfff0de, 2.8);
-keyL.position.set(0.9, 1.8, 1.6); keyL.target.position.set(0.1,-0.3,0.1); scene.add(keyL, keyL.target);
-keyL.castShadow = true; keyL.shadow.mapSize.set(2048,2048);
-Object.assign(keyL.shadow.camera, { left:-0.9, right:0.9, top:0.9, bottom:-0.9, near:0.5, far:5 });
-keyL.shadow.bias = -0.0002; keyL.shadow.normalBias = 0.003;
-const rim = new THREE.DirectionalLight(0x86b4ff, 1.4); rim.position.set(-0.5, 0.9, -2.0); scene.add(rim);
-const fill = new THREE.DirectionalLight(0xffc9a8, 0.5); fill.position.set(-0.6,-0.4,1.5); scene.add(fill);
-
-const envReady = new Promise(resolve => {
-  new RGBELoader().load('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/equirectangular/royal_esplanade_1k.hdr', tex => {
-    tex.mapping = THREE.EquirectangularReflectionMapping;
-    scene.environment = tex; scene.background = tex; scene.backgroundBlurriness = 0.42; scene.backgroundIntensity = 0.36;
-    hemi.intensity = 0.12; keyL.intensity = 2.1; rim.intensity = 0.6; fill.intensity = 0.1;
-    renderer.toneMappingExposure = 0.86; skinMat.envMapIntensity = 0.55; weightMat.envMapIntensity = 0.5; xrayMat.envMapIntensity = 0.4; xrayMat.opacity = 0.32;
-    resolve(true);
-  }, undefined, () => resolve(false));
-});
-const skinMat = new THREE.MeshPhysicalMaterial({ color:0xd79f7e, roughness:0.52, sheen:0.5, sheenColor:0xff8f70, sheenRoughness:0.45, clearcoat:0.06, clearcoatRoughness:0.6 });
-const xrayMat = new THREE.MeshPhysicalMaterial({ color:0xd79f7e, roughness:0.5, transparent:true, opacity:0.26, depthWrite:false });
-const weightMat = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.6 });
-const arm = new THREE.SkinnedMesh(geo, skinMat);
-arm.add(root); arm.bind(new THREE.Skeleton(bones));
-arm.castShadow = arm.receiveShadow = true; arm.frustumCulled = false;
-scene.add(arm);
-
-// nails ride on the distal bones
-const nails = [];
-const nailGeo = new THREE.SphereGeometry(1, 14, 10), nailMat = new THREE.MeshPhysicalMaterial({ color:0xf0c9b8, roughness:0.25, clearcoat:0.6 });
-for (const F of FINGERS) {
-  const n = new THREE.Mesh(nailGeo, nailMat), r = key(F.rk, F.len[0]+F.len[1]+F.len[2]*0.6);
-  n.scale.set(F.len[2]*0.30, 0.0014, r*0.66); n.position.set(F.len[2]*0.60, r*0.80, 0);
-  F.bones[2].add(n); nails.push(n);
-}
-
-// mannequin torso + stand
-const matte = new THREE.MeshStandardMaterial({ color:0x2a2e37, roughness:0.85 });
-const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.42, 12, 32), matte);
-torso.position.set(-0.125,-0.24,0); torso.scale.z = 0.8; torso.castShadow = torso.receiveShadow = true; scene.add(torso);
-const FLOOR = -0.82;
-const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.012,0.012,0.3,16), matte); pole.position.set(-0.125,-0.67,0); pole.castShadow = true; scene.add(pole);
-const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.17,0.016,48), matte); foot.position.set(-0.125,FLOOR+0.008,0); foot.receiveShadow = foot.castShadow = true; scene.add(foot);
-const TY = -0.31;   // table top height
-// procedural wood: plank tone, long wavy grain streaks, seams between planks
-function woodTexture(seed, base, planks) {
-  const c = document.createElement('canvas'); c.width = 1024; c.height = 512; const g = c.getContext('2d');
-  let sd = seed; const rnd = () => (sd = (sd*16807) % 2147483647)/2147483647;
-  g.fillStyle = base; g.fillRect(0, 0, 1024, 512);
-  const ph = 512/planks;
-  for (let i = 0; i < planks; i++) { g.fillStyle = rnd() < 0.5 ? `rgba(40,18,6,${0.05+rnd()*0.10})` : `rgba(255,214,160,${0.03+rnd()*0.07})`; g.fillRect(0, i*ph, 1024, ph); }
-  for (let i = 0; i < 1100; i++) {
-    const y = rnd()*512, al = 0.03+rnd()*0.10, f = 0.003+rnd()*0.007, amp = 2+rnd()*8, p0 = rnd()*6.28;
-    g.strokeStyle = rnd() < 0.72 ? `rgba(58,28,10,${al})` : `rgba(255,224,176,${al*0.7})`; g.lineWidth = 0.5+rnd()*1.8;
-    g.beginPath();
-    for (let x = 0; x <= 1024; x += 16) { const yy = y + Math.sin(x*f+p0)*amp + Math.sin(x*f*3.1+p0*2)*amp*0.25; if (x) g.lineTo(x, yy); else g.moveTo(x, yy); }
-    g.stroke();
-  }
-  for (let k = 0; k < 5; k++) {                                   // a few knots
-    const kx = rnd()*1024, ky = rnd()*512, kr = 5+rnd()*9, rg = g.createRadialGradient(kx, ky, 0, kx, ky, kr*2.2);
-    rg.addColorStop(0, 'rgba(38,18,8,0.65)'); rg.addColorStop(0.45, 'rgba(60,30,12,0.28)'); rg.addColorStop(1, 'rgba(60,30,12,0)');
-    g.fillStyle = rg; g.beginPath(); g.ellipse(kx, ky, kr*2.6, kr*1.3, 0, 0, 6.283); g.fill();
-  }
-  g.fillStyle = 'rgba(26,12,5,0.6)'; for (let i = 1; i < planks; i++) g.fillRect(0, i*ph-1, 1024, 2);
-  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  return t;
-}
-{
-  const topTex = woodTexture(11, '#9a6a44', 5), legTex = woodTexture(29, '#6e472c', 1);
-  const bump = topTex.clone(); bump.colorSpace = THREE.NoColorSpace; bump.needsUpdate = true;
-  const wood = new THREE.MeshPhysicalMaterial({ map: topTex, bumpMap: bump, bumpScale: 1.2, roughness: 0.46, clearcoat: 0.3, clearcoatRoughness: 0.35 });
-  const dark = new THREE.MeshPhysicalMaterial({ map: legTex, roughness: 0.55, clearcoat: 0.15, clearcoatRoughness: 0.5 });
-  const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; scene.add(m); return m; };
-  const TW = 0.74, TD = 0.44, TT = 0.030, cx = 0.17, cz = 0.47;      // top: width, depth, thickness, centre
-  add(new RoundedBoxGeometry(TW, TT, TD, 5, 0.007), wood, cx, TY - TT/2, cz);
-  const legH = TY - TT - FLOOR, lx = TW/2 - 0.055, lz = TD/2 - 0.055, ay = TY - TT - 0.035;
-  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {            // square legs that taper toward the floor
-    const leg = add(new RoundedBoxGeometry(0.046, legH, 0.046, 3, 0.006), dark, cx + sx*lx, FLOOR + legH/2, cz + sz*lz);
-    const pa = leg.geometry.attributes.position;
-    for (let i = 0; i < pa.count; i++) { const k = 0.62 + 0.38*(pa.getY(i)/legH + 0.5); pa.setX(i, pa.getX(i)*k); pa.setZ(i, pa.getZ(i)*k); }
-    leg.geometry.computeVertexNormals();
-  }
-  for (const sz of [-1, 1]) add(new RoundedBoxGeometry(2*lx - 0.04, 0.062, 0.018, 2, 0.003), dark, cx, ay, cz + sz*lz);   // apron rails under the top
-  for (const sx of [-1, 1]) add(new RoundedBoxGeometry(0.018, 0.062, 2*lz - 0.04, 2, 0.003), dark, cx + sx*lx, ay, cz);
-}
-// floor: a soft-edged disc that fades into the surroundings, so the stand and table sit on something
-const floorAlpha = (() => { const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d'), rg = g.createRadialGradient(128,128,0,128,128,128);
-  rg.addColorStop(0, '#fff'); rg.addColorStop(0.55, '#fff'); rg.addColorStop(1, '#000'); g.fillStyle = rg; g.fillRect(0,0,256,256); return new THREE.CanvasTexture(c); })();
-const floor = new THREE.Mesh(new THREE.CircleGeometry(3.4, 96), new THREE.MeshStandardMaterial({ color:0x4f4943, roughness:0.5, metalness:0.0, envMapIntensity:0.6, alphaMap:floorAlpha, transparent:true }));
-floor.rotation.x = -PI/2; floor.position.y = FLOOR; floor.receiveShadow = true; scene.add(floor);
-
-// bone overlay (Blender-style octahedra parented to the real bones)
-const boneViz = [];
-{
-  const P = [[0,0,0],[.15,.09,0],[.15,0,.09],[.15,-.09,0],[.15,0,-.09],[1,0,0]];
-  const T = [[0,2,1],[0,3,2],[0,4,3],[0,1,4],[5,1,2],[5,2,3],[5,3,4],[5,4,1]];
-  const bg = new THREE.BufferGeometry();
-  bg.setAttribute('position', new THREE.Float32BufferAttribute(T.flat().flatMap(i => P[i]), 3)); bg.computeVertexNormals();
-  const eg = new THREE.EdgesGeometry(bg), jg = new THREE.SphereGeometry(1, 16, 12);
-  const bm = new THREE.MeshStandardMaterial({ color:0xf3f6fb, roughness:0.55, flatShading:true });
-  const em = new THREE.LineBasicMaterial({ color:0x11141b });
-  const jm = new THREE.MeshStandardMaterial({ color:0x7fd4ff, roughness:0.4, emissive:0x1a4a66 });
-  for (const b of bones) {
-    if (b === half || b.userData.helper) continue;
-    const len = b.userData.len, g = new THREE.Group();
-    if (len > 0) {
-      const w = Math.min(len*0.11, 0.012)/0.09;
-      const m = new THREE.Mesh(bg, bm); m.scale.set(len, w, w); g.add(m);
-      const e = new THREE.LineSegments(eg, em); e.scale.copy(m.scale); g.add(e);
-    }
-    const j = new THREE.Mesh(jg, jm); j.scale.setScalar(len > 0 ? Math.min(Math.max(len*0.09, 0.0028), 0.012) : 0.006); g.add(j);
-    g.visible = false; b.add(g); boneViz.push(g);
-  }
-  const lp = []; for (const F of FINGERS) lp.push(0,0,0, ...F.base);   // offset-parent links, palm → finger roots
-  const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
-  const links = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color:0x7fd4ff, transparent:true, opacity:0.55 }));
-  links.visible = false; hand.add(links); boneViz.push(links);
-}
-
-// reach target
-const orb = new THREE.Mesh(new THREE.SphereGeometry(0.033, 40, 28),
-  new THREE.MeshPhysicalMaterial({ color:0x5fc8ff, emissive:0x1b6fa8, emissiveIntensity:0.7, roughness:0.15, clearcoat:1 }));
-orb.castShadow = true; scene.add(orb);
-const orbHit = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 8), new THREE.MeshBasicMaterial({ visible:false })); orb.add(orbHit);
-
-/* ───────────────────────── springs: every animated channel is a damped spring ───────────────────────── */
-const ALL = [];
-const sp = (x, w, z=1) => { const s = { x, v:0, t:x, w, z }; ALL.push(s); return s; };
-class VS {
-  constructor(x,y,z,w,zeta=1) { this.s = [sp(x,w,zeta), sp(y,w,zeta), sp(z,w,zeta)]; }
-  to(v, w) { this.s[0].t = v.x; this.s[1].t = v.y; this.s[2].t = v.z; if (w) for (const s of this.s) s.w = w; }
-  get(v) { return v.set(this.s[0].x, this.s[1].x, this.s[2].x); }
-}
-function stepSprings(h) { for (const s of ALL) { s.v += (-2*s.z*s.w*s.v - s.w*s.w*(s.x-s.t))*h; s.x += s.v*h; } }
-
-const tgtS = new VS(0.2,-0.3,0.3, 9), poleS = new VS(0.5,-1,-0.4, 5), palmS = new VS(0,-1,0, 6);
-const shS = new VS(0,0,0, 6), orbS = new VS(0.25,-0.1,0.38, 11, 0.8);
-const twS = sp(0, 13, 0.9), wflexS = sp(0, 12, 0.7), wdevS = sp(0, 12, 0.7);
-const curlS = FINGERS.map((F,f) => [0,1,2].map(j => sp(0.2, 19-2.5*j-0.6*f, 0.72)));   // distal joints & outer fingers lag → overlap
-const spreadS = FINGERS.map(() => sp(0, 12, 0.8));
-const rollS = sp(0, 10, 0.85), bicepS = sp(0, 8), tenseS = sp(0, 8), orbVis = sp(1, 9);
-
-/* ───────────────────────── behaviours: each writes a desired pose, springs do the rest ───────────────────────── */
-const P = { tgt:new V3(), pole:new V3(), palm:new V3(), tgtW:9, wflex:0, wdev:0, tense:0,
-            curl:FINGERS.map(() => [0,0,0]), spread:[0,0,0,0,0] };
 // Finger poses, read off single-hand reference footage. Each row is [knuckle, middle joint, end joint]; rows are index → pinky.
 const OPEN  = [null,[-0.10,0.04,0.02],[-0.10,0.04,0.02],[-0.08,0.05,0.03],[-0.06,0.06,0.03]];   // flat and fanned, knuckles bent back a touch
 const SPLAY = [0, 0.20, 0.04, 0.12, 0.16];                                                       // open fingers fan out, pinky most
@@ -502,6 +153,7 @@ const RELAX = [null,[0.30,0.38,0.22],[0.42,0.50,0.30],[0.52,0.58,0.34],[0.60,0.6
 const BEAK  = [null,[1.15,0.80,0.35],[1.20,0.85,0.38],[1.20,0.85,0.38],[1.15,0.85,0.40]];        // half-way to a fist: knuckles bent, tips gathered at the thumb
 const GRAB  = [null,[0.95,1.05,0.80],[0.95,1.05,0.80],[0.95,1.05,0.80],[0.95,1.05,0.80]];        // over-closed: contact stops each joint
 const FIST  = [null,[1.55,1.85,1.40],[1.57,1.85,1.40],[1.57,1.85,1.40],[1.57,1.85,1.40]];        // over-closed: the palm stops them
+const POINT = [null,[-0.02,0.02,0.02],[1.45,1.6,1.1],[1.5,1.6,1.1],[1.5,1.6,1.1]];              // index out, the rest folded
 // Thumb poses: [fold across palm, joint 2, joint 3, lift away from palm, roll toward the fingers]
 const THUMB = {
   flat:  [0.00, 0.05, 0.08, 0.00, 0.00],
@@ -512,156 +164,8 @@ const THUMB = {
   ready: [-0.15, 0.10, 0.15, 0.55, 0.00],     // held clear below the palm while the fingers close
   grab:  [-0.02, 0.75, 1.10, 0.45, 0.00],      // aims into the ball; contact stops it
 };
-const noise = (t, s) => Math.sin(t*1.3+s)*0.5 + Math.sin(t*2.17+s*1.7)*0.3 + Math.sin(t*0.71+s*2.3)*0.2;
-const blendCurl = (f, A, Bp, k) => { for (let j = 0; j < 3; j++) P.curl[f][j] = lerp(A[f][j], Bp[f][j], k); };
-const setThumb = (A, Bp, k) => { for (let j = 0; j < 3; j++) P.curl[0][j] = lerp(A[j], Bp[j], k); P.spread[0] = lerp(A[3], Bp[3], k); P.roll = lerp(A[4], Bp[4], k); };
-// closing a hand is not one motion: the knuckles fold first and the fingertips gather at the thumb, then the fingers roll shut.
-// Opening runs the same path backwards.
-const fistBlend = (f, c) => c < 0.5 ? blendCurl(f, OPEN, BEAK, smooth(0, 0.5, c)) : blendCurl(f, BEAK, FIST, smooth(0.5, 1, c));
-
-const Qh = new Quat(), palmPoint = new V3(0.3,-0.3,0.3), orbGoal = new V3(0.25,-0.1,0.38), orbPos = new V3();
-let dragging = false, hold = 1.5, grip = 0;
-const tv = new V3(), tv2 = new V3();
-function pickOrbGoal() {
-  do { orbGoal.set(Math.random()*0.42, TY+0.07+Math.random()*0.42, 0.26+Math.random()*0.24); } while (orbGoal.length() < 0.30 || orbGoal.length() > 0.60);
-}
-const gripPose = g => {
-  for (let f = 1; f < 5; f++) { blendCurl(f, OPEN, GRAB, g); P.spread[f] = lerp(SPLAY[f]*0.8, [0,0.08,0,0.06,0.10][f], g); }
-  setThumb(THUMB.open, THUMB.grab, g);
-};
-const MODES = {
-  reach: { label:'Reach & grab', hint:'The hand chases the ball and closes around it. Drag the ball yourself.',
-    fn(t, dt) {
-      if (!dragging) { hold -= dt; if (hold <= 0) { pickOrbGoal(); hold = 3.3+Math.random()*1.3; } }
-      orbS.to(tv.copy(orbGoal).add(tv2.set(0, Math.sin(t*1.7)*0.008, 0)));
-      // Going straight at the ball would drive the fingers into it. Instead the palm first lines up over the ball
-      // (the ball sits along the direction the palm faces), and only then closes the remaining gap along that direction.
-      const nOut = tv.set(0,-1,0).applyQuaternion(Qh), off = tv2.copy(orbPos).sub(palmPoint);
-      const along = off.dot(nOut), side = Math.sqrt(Math.max(0, off.lengthSq() - along*along));
-      const standoff = clamp(side*1.6, 0, 0.10);
-      P.tgt.copy(orbPos).addScaledVector(nOut, -standoff).sub(tv.set(0.075,-0.046,0).applyQuaternion(Qh));
-      P.tgtW = 6.5; P.pole.set(0.55,-1,-0.35);
-      const up = smooth(-0.05, 0.25, orbPos.y);
-      P.palm.set(-0.3, lerp(-1,-0.25,up), lerp(0.1,1,up));
-      grip = 1 - smooth(0.012, 0.05, palmPoint.distanceTo(orbPos));   // close only once the ball is in the palm
-      gripPose(grip);
-      P.wflex = lerp(0.28, 0.05, grip); P.wdev = 0; P.tense = grip*0.6;
-    } },
-  pick: { label:'Pick & place', hint:'Picks the ball up and sets it down; fingers wrap it joint by joint.',
-    a:new V3(0.03, TY+0.033, 0.43), b:new V3(0.31, TY+0.033, 0.47), tp:0, off:new V3(), held:false,
-    fn(t, dt) {
-      const m = this; m.tp += dt;
-      if (m.tp >= 6.2) { m.tp = 0; const x = m.a; m.a = m.b; m.b = x; }
-      const p = m.tp, goal = tv2, hover = 0.10; let g = 0;
-      if (p < 1.2)      { goal.copy(m.a); goal.y += hover; }
-      else if (p < 1.9) { goal.copy(m.a); goal.y += hover*(1 - smooth(1.2,1.8,p)); }
-      else if (p < 2.5) { goal.copy(m.a); g = smooth(1.9,2.4,p); }
-      else if (p < 3.9) { const k = smooth(2.5,3.8,p); goal.lerpVectors(m.a, m.b, k); goal.y += 0.15*Math.sin(k*PI); g = 1; }
-      else if (p < 4.4) { goal.copy(m.b); g = 1; }
-      else if (p < 5.0) { goal.copy(m.b); g = 1 - smooth(4.4,4.8,p); }
-      else              { goal.copy(m.b); goal.y += hover*smooth(5.0,5.6,p); }
-      if (p >= 2.35 && p < 4.6) {
-        // the ball is now carried by the hand. It keeps whatever small offset it had at the moment of pickup and
-        // eases that out, rather than snapping into the palm (a snap shoves it into the fingers and makes them flinch).
-        if (!m.held) { m.held = true; m.off.copy(orbPos).sub(palmPoint); }
-        m.off.multiplyScalar(Math.exp(-dt*4));
-        tv.copy(palmPoint).add(m.off);
-        for (let i = 0; i < 3; i++) { const sp_ = orbS.s[i]; sp_.x = sp_.t = tv.getComponent(i); sp_.v = 0; }
-        orbPos.copy(tv);
-      } else { m.held = false; orbS.to(p < 2.35 ? m.a : m.b); }
-      P.tgt.copy(goal).sub(tv.set(0.075,-0.046,0).applyQuaternion(Qh)); P.tgtW = 7;
-      P.pole.set(0.7,-0.8,-0.3); P.palm.set(-0.15,-1,0.05);
-      grip = g; gripPose(g);
-      P.wflex = lerp(0.25, 0.08, g); P.wdev = 0; P.tense = g*0.6;
-    } },
-  flow: { label:'Finger wave', hint:'A loose hand: a curl ripples through the fingers, knuckle first.',
-    fn(t) {
-      P.tgt.set(0.19+0.015*noise(t*0.4,7), -0.04+0.012*noise(t*0.35,8), 0.37); P.tgtW = 5;
-      P.pole.set(0.7,-0.8,-0.3); P.palm.set(-0.25+0.55*Math.sin(t*0.31), -1, 0.15);
-      for (let f = 1; f < 5; f++) {
-        // each finger runs the same slow cycle a beat behind its neighbour; within a finger the knuckle leads and the tip follows
-        const ph = t*1.15 - (f-1)*0.62, a = 0.5+0.5*Math.sin(ph), b = 0.5+0.5*Math.sin(ph-0.55);
-        P.curl[f][0] = lerp(-0.05, 1.00, a*a*(3-2*a)); P.curl[f][1] = lerp(0.10, 0.85, b); P.curl[f][2] = lerp(0.06, 0.50, b);
-        P.spread[f] = SPLAY[f]*(1-a)*0.8;
-      }
-      setThumb(THUMB.relax, THUMB.beak, 0.5+0.5*Math.sin(t*1.15-2.9));
-      P.wflex = -0.55+0.22*Math.sin(t*0.52); P.wdev = 0.10*Math.sin(t*0.4+1); P.tense = 0.1;
-    } },
-  wave: { label:'Wave', hint:'The forearm swings from the elbow; wrist and fingers trail behind.',
-    fn(t) {
-      const w = 6.4;
-      P.tgt.set(0.29+0.12*Math.sin(t*w), 0.20+0.014*Math.cos(t*w*2), 0.11); P.tgtW = 11;
-      P.pole.set(0.6,-1,-0.3); P.palm.set(0,0.1,1);
-      for (let f = 1; f < 5; f++) { blendCurl(f, OPEN, OPEN, 0); P.spread[f] = SPLAY[f]; }
-      setThumb(THUMB.open, THUMB.open, 0);
-      P.wflex = 0.12; P.wdev = -0.16*Math.cos(t*w); P.tense = 0.1;
-    } },
-  fist: { label:'Clench', hint:'Fingers roll shut and the thumb lands a beat behind. Watch the forearm swell.',
-    fn(t) {
-      P.tgt.set(0.10+0.006*noise(t,1), -0.235+0.006*noise(t,2), 0.33); P.tgtW = 9;
-      P.pole.set(0.6,-1,-0.35); P.palm.set(-0.25,1,0.1);
-      const p = t % 4.4; let avg = 0;
-      for (let f = 1; f < 5; f++) {
-        const dc = (4-f)*0.07, dopen = (f-1)*0.07;
-        const c = smooth(0.25+dc, 1.45+dc, p)*(1 - smooth(2.75+dopen, 3.9+dopen, p));
-        fistBlend(f, c); P.spread[f] = SPLAY[f]*(1 - smooth(0, 0.35, c)); avg += c/4;
-      }
-      // thumb: swings clear while the fingers close, folds over them once they are shut, and lets go before they open
-      const ready = smooth(0.25, 0.75, p)*(1 - smooth(3.3, 4.0, p)), fold = smooth(0.55, 1.75, p)*(1 - smooth(2.62, 3.55, p));   // a beat behind the fingers: it lands as the index finishes closing
-      setThumb(THUMB.open, THUMB.ready, ready);
-      const cur = [P.curl[0][0], P.curl[0][1], P.curl[0][2], P.spread[0], P.roll];
-      setThumb(cur, THUMB.fist, fold);
-      P.wflex = 0.05+0.25*avg; P.wdev = 0; P.tense = avg;
-    } },
-  drum: { label:'Finger roll', hint:'Each finger lifts and drops in turn, stopping on the table.',
-    fn(t) {
-      P.tgt.set(0.17, TY+0.030, 0.40); P.tgtW = 9;
-      P.pole.set(0.9,-0.7,-0.3); P.palm.set(0,-1,0);
-      for (let f = 1; f < 5; f++) {
-        // resting, the finger presses lightly on the table (contact stops it); the pulse lifts it, then it drops back
-        const ph = ((t*1.4 - (4-f)*0.12) % 1 + 1) % 1, lift = gauss(ph, 0.30, 0.11);
-        P.curl[f][0] = 0.35 - 0.55*lift; P.curl[f][1] = 0.16 + 0.14*lift; P.curl[f][2] = 0.12 + 0.06*lift; P.spread[f] = 0.10;
-      }
-      setThumb(THUMB.flat, THUMB.open, 0.4*gauss(((t*1.4-0.62)%1+1)%1, 0.30, 0.13));
-      P.wflex = levelWrist(-0.07); P.wdev = 0; P.tense = 0.1;   // the forearm slopes down to the table, so the wrist bends back to keep the hand level
-    } },
-  idle: { label:'Rest', hint:'The arm hangs at rest, with a slow breathing sway.',
-    fn(t) {
-      P.tgt.set(0.085+0.012*noise(t*0.5,4), -0.548+0.005*Math.sin(t*1.1), 0.06+0.02*noise(t*0.4,5)); P.tgtW = 5;
-      P.pole.set(0.35,-0.1,-1); P.palm.set(-1,0,0.15);
-      for (let f = 1; f < 5; f++) { for (let j = 0; j < 3; j++) P.curl[f][j] = RELAX[f][j] + 0.05*noise(t*0.6, f*3+j); P.spread[f] = 0; }
-      setThumb(THUMB.relax, THUMB.relax, 0);
-      P.wflex = -0.1; P.wdev = 0.05; P.tense = 0;
-    } },
-};
-let mode = 'reach', view = 'skin', time = 0, paused = false;
-
-/* ───────────────────────── solve + apply ───────────────────────── */
-const S = new V3(), toT = new V3(), dir = new V3(), perp = new V3(), E = new V3(), W = new V3(), Wprev = new V3(0.3,-0.3,0.3);
-const Xu = new V3(), Yu = new V3(), Zu = new V3(), M = new THREE.Matrix4();
-const Qu = new Quat(), Qf = new Quat(), Qt = new Quat(), q1 = new Quat(), q2 = new Quat(), eul = new THREE.Euler();
-const vf = new V3(), D = new V3();
-let flex = 0;
-
-/* ───────────────────────── hand collisions ─────────────────────────
-   Every finger bone is a capsule. Colliders: the palm, the other fingers (for the thumb), the ball and the table.
-   A finger closes joint by joint from the knuckle outward and each joint stops when its part of the finger
-   touches something, which is what makes a grip wrap around an object and the thumb rest on a fist. */
 const ORB_R = 0.033;
-for (const F of FINGERS) { const l = F.len; F.sr = [key(F.rk, l[0]/2), key(F.rk, l[0]+l[1]/2), key(F.rk, l[0]+l[1]+l[2]*0.6)]; }
-const HS = FINGERS.map(() => ({ p:[new V3(),new V3(),new V3(),new V3()], pose:[0.2,0.2,0.2,0], sm:[0.2,0.2,0.2,0] }));
-const cq = new Quat(), cq2 = new Quat(), cv = new V3(), cv2 = new V3(), cd1 = new V3(), cd2 = new V3(), cr = new V3(), orbH = new V3();
-let needLift = 0, pushUp = 0;                          // how much the table is pushing the whole hand up
-let orbOn = false, thumbRoll = 0;                      // thumbRoll: the thumb turning about its own length to face the fingers (opposition)
-function chain(F, c0, c1, c2, sp, out) {                // joint positions in the hand's own frame
-  cq.copy(F.quat).multiply(cq2.setFromAxisAngle(AY, sp*F.spreadSign + F.fanFix));
-  if (F.thumb) cq.multiply(cq2.setFromAxisAngle(AX, thumbRoll));
-  const l = F.len, a1 = c0+c1, a2 = a1+c2;
-  out[0].fromArray(F.base);
-  out[1].set(l[0]*Math.cos(c0), -l[0]*Math.sin(c0), 0).applyQuaternion(cq).add(out[0]);
-  out[2].set(l[1]*Math.cos(a1), -l[1]*Math.sin(a1), 0).applyQuaternion(cq).add(out[1]);
-  out[3].set(l[2]*Math.cos(a2), -l[2]*Math.sin(a2), 0).applyQuaternion(cq).add(out[2]);
-}
+const cd1 = new V3(), cd2 = new V3(), cr = new V3(), cv2g = new V3();
 function segDist2(p1, q1, p2, q2) {                      // squared distance between two segments
   cd1.subVectors(q1, p1); cd2.subVectors(q2, p2); cr.subVectors(p1, p2);
   const a = cd1.dot(cd1), e = cd2.dot(cd2), f = cd2.dot(cr), c = cd1.dot(cr), b = cd1.dot(cd2), den = a*e - b*b;
@@ -670,313 +174,629 @@ function segDist2(p1, q1, p2, q2) {                      // squared distance bet
   return cr.addScaledVector(cd1, s).addScaledVector(cd2, -t).lengthSq();
 }
 function segPointDist2(a, b, pt) {
-  cd1.subVectors(b, a); const t = clamp(cv2.subVectors(pt, a).dot(cd1)/cd1.dot(cd1), 0, 1);
-  return cv2.copy(a).addScaledVector(cd1, t).distanceToSquared(pt);
+  cd1.subVectors(b, a); const t = clamp(cv2g.subVectors(pt, a).dot(cd1)/cd1.dot(cd1), 0, 1);
+  return cv2g.copy(a).addScaledVector(cd1, t).distanceToSquared(pt);
 }
-function hits(f, P, j0, table) {                         // does finger f, from bone j0 outward, touch anything?
-  const F = FINGERS[f], sr = F.sr;
-  for (let k = Math.max(j0, F.thumb ? 1 : 0); k < 3; k++) {
-    const a = P[k], b = P[k+1], r = sr[k];
-    for (let i = 1; i <= 2; i++) {
-      cv.lerpVectors(a, b, i/2);
-      if (k >= 1 && cv.x > 0 && cv.x < 0.086 && Math.abs(cv.z) < 0.042 && cv.y > -(0.0135+r)+0.0045) return true;   // palm
-      if (table && cv2.copy(cv).applyQuaternion(Qh).y + W.y < TY + r - 0.0005) return true;                          // table top
+
+function makeArm(side) {
+  const bones = [];
+  function mkBone(name, parent, pos, quat, len) {
+    const b = new THREE.Bone(); b.name = side + '_' + name; b.position.fromArray(pos);
+    if (quat) b.quaternion.copy(quat);
+    if (parent) parent.add(b);
+    b.userData = { rest: b.quaternion.clone(), len, index: bones.length };
+    bones.push(b); return b;
+  }
+  /* ── skeleton (38 bones, as before) ── */
+  const root  = mkBone('shoulder', null,  [0,0,0], null, 0);     // now also the shoulder half-swing helper
+  const upper = mkBone('upperArm', root,  [0,0,0], null, L1);
+  const half  = mkBone('elbowHalf', upper,[L1,0,0], null, 0);       // rotates half the elbow angle: keeps volume
+  const fore  = mkBone('forearm',  upper, [L1,0,0], null, L2/3);
+  const tw1   = mkBone('twist1',   fore,  [L2/3,0,0], null, L2/3);  // pronation is spread over three bones
+  const tw2   = mkBone('twist2',   tw1,   [L2/3,0,0], null, L2/3);
+  const tw3   = mkBone('twist3',   tw2,   [L2/3,0,0], null, 0);
+  const hand  = mkBone('hand',     tw3,   [0,0,0], null, 0.086);
+  half.userData.helper = true;
+  const B = { root:0, upper:1, half:2, fore:3, tw1:4, tw2:5, tw3:6, hand:7 };
+  const FINGERS = FINGER_DEFS.map(d => ({ ...d }));
+  for (const F of FINGERS) {
+    const b0 = mkBone(F.name+'1', hand, F.base, F.quat, F.len[0]);
+    const b1 = mkBone(F.name+'2', b0, [F.len[0],0,0], null, F.len[1]);
+    const b2 = mkBone(F.name+'3', b1, [F.len[1],0,0], null, F.len[2]);
+    F.bones = [b0,b1,b2];
+    // half-angle helpers at each joint so knuckles keep their volume when the finger curls
+    F.helpers = [mkBone(F.name+'H1', hand, F.base, F.quat, 0), mkBone(F.name+'H2', b0, [F.len[0],0,0], null, 0), mkBone(F.name+'H3', b1, [F.len[1],0,0], null, 0)];
+    for (const hb of F.helpers) hb.userData.helper = true;
+    const L = F.len[0]+F.len[1]+F.len[2], r = F.r;
+    F.rk = F.thumb
+      // the first thumb bone (metacarpal) lives inside the palm: it is wrapped in the fat thenar pad, and only
+      // the last two bones stick out as the free thumb
+      ? [[-0.014,0.0140],[0,0.0180],[0.020,0.0180],[0.034,0.0148],[F.len[0],0.0116],[F.len[0]+0.014,0.0094],[F.len[0]+F.len[1],0.0098],[F.len[0]+F.len[1]+0.011,0.0088],[L,0.0084]]
+      : [[-0.012,r*1.05],[0,r*1.04],[F.len[0],r],[F.len[0]+F.len[1],r*0.93],[L,r*0.85]];
+    F.tipR = key(F.rk, L);
+  }
+  // NEW: upper-arm twist helpers. The upper arm's roll is spread like the forearm's: none of it at the deltoid,
+  // 20% / 60% along the arm, all of it at the elbow.
+  const ut0 = mkBone('upperTwist0', root, [0,0,0], null, 0), ut1 = mkBone('upperTwist1', root, [0,0,0], null, 0);
+  ut0.userData.helper = ut1.userData.helper = true;
+  B.ut0 = ut0.userData.index; B.ut1 = ut1.userData.index;
+  root.updateMatrixWorld(true);
+  for (const F of FINGERS) F.bindInv = F.bones[0].matrixWorld.clone().invert();
+  // which way does a +Y rotation of the thumb base move it away from the fingers?
+  {
+    const q = new Quat().setFromAxisAngle(AY, 0.3).premultiply(thumbQuat);
+    const d0 = new V3(1,0,0).applyQuaternion(thumbQuat), d1 = new V3(1,0,0).applyQuaternion(q);
+    FINGERS[0].spreadSign = d1.x < d0.x ? 1 : -1;
+  }
+  FINGERS[1].spreadSign = -1; FINGERS[2].spreadSign = -0.15; FINGERS[3].spreadSign = 0.9; FINGERS[4].spreadSign = 1.2;
+
+  /* ── painted weights ── */
+  function armSection(s, th) {
+    const x = s.xe, e = 2/key(NN, x), c = Math.cos(th), sn = Math.sin(th);
+    let y = key(HY,x)*Math.sign(c)*Math.abs(c)**e, z = key(HZ,x)*Math.sign(sn)*Math.abs(sn)**e, m = 1;
+    for (const b of BUMPS) m += b.a*gauss(x,b.x,b.s)*Math.max(0, Math.cos(th-b.th))**2;
+    y *= m; z *= m;
+    if (s.end === 1) { y *= s.k; z *= 0.72+0.28*s.k; } else if (s.end === -1) { y *= s.k; z *= s.k; }
+    const t = smooth(WX+0.03, PE, s.x), dx = t*(0.2*z - 3.0*z*z);
+    if (c > 0 && x > WX+0.04) for (let f = 1; f < 5; f++) {      // metacarpal heads: a knuckle behind each finger
+      const b = FINGERS[f].base; y += 0.0038*s.k*gauss(s.x+dx-WX, b[0]-0.005, 0.009)*gauss(z, b[2], 0.0075);
     }
-    if (orbOn && segPointDist2(a, b, orbH) < (ORB_R + r - 0.004)**2) return true;                                   // ball
-    if (F.thumb) for (let g = 1; g < 5; g++) {                                                                       // other fingers
-      const H = HS[g].p, G = FINGERS[g];
-      for (let m = 0; m < 3; m++) if (segDist2(a, b, H[m], H[m+1]) < (r + G.sr[m] - 0.0045)**2) return true;
+    return [dx, y, z];                 // knuckle line is an arc, not a straight cut
+  }
+  function armWeights(x, th) {
+    if (x < L1+0.075) {
+      const wr = 1 - smooth(-0.035, 0.07, x);
+      // The blend width varies around the elbow. On the inside of the bend the two segments stay almost rigid,
+      // so they simply press into each other along a clean crease (blending there drags skin through the joint
+      // and leaves a pit). On the outside the blend is wide, so the skin stretches smoothly over the point.
+      const k = (1 - Math.sin(th))/2, w = lerp(0.010, 0.075, k*k*(3-2*k));
+      const eu = 1 - smooth(L1-w, L1, x), ef = smooth(L1, L1+w, x);
+      // the upper-arm share is split over the twist helpers (no roll near the shoulder, all of it at the elbow)
+      const up = eu*(1-wr), a = smooth(0.06, 0.15, x), b = smooth(0.15, 0.25, x);
+      return [[B.root, eu*wr], [B.ut0, up*(1-a)], [B.ut1, up*(a-b)], [B.upper, up*b], [B.half, 1-eu-ef], [B.fore, ef]];
+    }
+    const N = [[L1+0.075,B.fore],[L1+0.13,B.tw1],[L1+0.19,B.tw2],[WX-0.022,B.tw3]];
+    let out = [[B.tw3,1]];
+    for (let i = 0; i < 3; i++) if (x < N[i+1][0]) { const t = smooth(N[i][0], N[i+1][0], x); out = [[N[i][1],1-t],[N[i+1][1],t]]; break; }
+    const hw = smooth(WX-0.022, WX+0.022, x);
+    out = out.map(([b,w]) => [b, w*(1-hw)]); out.push([B.hand, hw]);
+    return out;
+  }
+  function fingerWeights(F, x) {
+    const l0 = F.len[0], l1 = F.len[1], bi = F.bi, hi = F.hi;
+    const w0 = F.thumb ? 0.016 : 0.010, bw = Math.min(0.008, l1*0.45);
+    const hat = (c, w) => { const up = 1 - smooth(c-w, c, x), af = smooth(c, c+w, x); return [af, 1-up-af]; };
+    const [a0,m0] = hat(0, w0), [a1,m1] = hat(l0, bw), [a2,m2] = hat(l0+l1, bw);
+    return [[B.hand, 1-a0-m0], [hi[0], m0], [bi[0], a0*(1-a1-m1)], [hi[1], m1], [bi[1], a1*(1-a2-m2)], [hi[2], m2], [bi[2], a2]];
+  }
+  for (const F of FINGERS) { F.bi = F.bones.map(b => b.userData.index); F.hi = F.helpers.map(b => b.userData.index); F.L = F.len[0]+F.len[1]+F.len[2]; }
+
+  /* ── skin geometry, built in arm space (only the left arm builds it; the right arm reuses it through a mirror) ── */
+  function buildGeometry(Q) {
+    const G = { pos:[], idx:[], si:[], sw:[], m0:[], m1:[] };
+    function addTube({ st, radial, section, weights, morph }) {
+      const base = G.pos.length/3;
+      for (const s of st) {
+        for (let j = 0; j < radial; j++) {
+          const th = j/radial*Math.PI*2, p = section(s, th);
+          const w = weights(s.x, th).filter(e => e[1] > 1e-4).sort((a,b) => b[1]-a[1]).slice(0,4);
+          const sum = w.reduce((a,e) => a+e[1], 0);
+          G.pos.push(s.x+p[0], p[1], p[2]);
+          for (let k = 0; k < 4; k++) { G.si.push(w[k] ? w[k][0] : 0); G.sw.push(w[k] ? w[k][1]/sum : 0); }
+          const m = morph ? morph(s, th, p) : [0,0,0,0,0,0];
+          G.m0.push(m[0],m[1],m[2]); G.m1.push(m[3],m[4],m[5]);
+        }
+      }
+      for (let i = 0; i < st.length-1; i++) for (let j = 0; j < radial; j++) {
+        const jn = (j+1)%radial, a = base+i*radial+j, b = a+radial, d = base+i*radial+jn, cc = d+radial;
+        G.idx.push(a,cc,b, a,d,cc);
+      }
+    }
+    addTube({
+      st: stations(-0.03, WX-0.04, Q.tubeN, { capStart:0.05, capN:7 }), radial: Q.tubeR,
+      section: armSection, weights: armWeights,
+      morph: (s, th, p) => {                               // 0: biceps contraction, 1: forearm tension
+        if (s.end) return [0,0,0,0,0,0];
+        const l = Math.hypot(p[1],p[2]) || 1, ny = p[1]/l, nz = p[2]/l;
+        const a = 0.014*gauss(s.xe,0.165,0.055)*Math.max(0, Math.cos(th-PI/2))**1.5;
+        const b = 0.0085*gauss(s.xe,0.375,0.06);
+        return [0,ny*a,nz*a, 0,ny*b,nz*b];
+      },
+    });
+    // ── hand: one seamless skin. The palm, the four fingers and the thumb are each described as a distance field;
+    // they are blended where they meet (so finger roots, webs and the thumb pad flow into the palm with no seam),
+    // and the surface of the blended field is meshed. Each vertex then takes its bone weights from the parts it is near.
+    {
+      const fInv = FINGERS.map(F => F.bindInv);
+      const lp = new V3(), df = [0,0,0,0,0], fx = [0,0,0,0,0]; let dpalm = 0;
+      function fingerSDF(f, x, y, z) {
+        const F = FINGERS[f], L = F.L, l0 = F.len[0], l1 = F.len[1];
+        lp.set(x, y, z).applyMatrix4(fInv[f]); fx[f] = lp.x;
+        if (lp.x < -0.04 || lp.x > L+0.03 || lp.y*lp.y + lp.z*lp.z > 0.0016) return 0.05;
+        const tipR = key(F.rk, L)*0.96, xa = clamp(lp.x, -0.014, L-tipR), yy = lp.y/0.94;
+        const c = Math.cos(Math.atan2(lp.z, lp.y)), kb = F.thumb ? 1.5 : 1;
+        let m = 1 + Math.max(0,c)*kb*(0.13*gauss(xa,l0,0.0055) + 0.11*gauss(xa,l0+l1,0.005) + (F.thumb ? 0 : 0.16*gauss(xa,0.001,0.007)));   // knuckles
+        m += 0.07*Math.max(0,-c)*gauss(xa, L-0.012, 0.008);                                                                              // finger pad
+        return Math.hypot(lp.x-xa, yy, lp.z) - key(F.rk, xa)*m;
+      }
+      function palmSDF(x, y, z) {
+        const xs = x - smooth(WX+0.03, PE, x)*(0.2*z - 3.0*z*z);          // undo the curved knuckle line
+        const xc = clamp(xs, WX-0.06, PE), hy = key(HY,xc), hz = key(HZ,xc), n = key(NN,xc);
+        const ay = Math.abs(y)/hy, az = Math.abs(z)/hz, rho = Math.pow(Math.pow(ay,n) + Math.pow(az,n), 1/n);
+        const th = Math.atan2(Math.sign(z)*Math.pow(az,n/2), Math.sign(y)*Math.pow(ay,n/2));
+        let m = 1; for (const b of BUMPS) { const g = gauss(xc,b.x,b.s); if (g > 1e-3) m += b.a*g*Math.max(0, Math.cos(th-b.th))**2; }
+        let d = (rho/m - 1)*Math.min(hy,hz);
+        if (y > 0 && xc > WX+0.04) for (let f = 1; f < 5; f++) { const b = FINGERS[f].base; d -= 0.0038*gauss(xs-WX, b[0]-0.005, 0.009)*gauss(z, b[2], 0.0075); }
+        const rr = 0.007, u = d+rr, v = xs-(PE+0.005)+rr;                  // rounded far edge
+        d = Math.min(Math.max(u, v), 0) + Math.hypot(Math.max(u,0), Math.max(v,0)) - rr;
+        return Math.max(d, (WX-0.052) - x);
+      }
+      function handSDF(x, y, z) {
+        dpalm = palmSDF(x, y, z) + 0.0007*(1 - smooth(WX-0.051, WX-0.040, x));   // sits a hair inside the arm tube where they overlap
+        let d = dpalm;
+        for (let f = 0; f < 5; f++) { df[f] = fingerSDF(f, x, y, z); d = Math.min(d, smin(dpalm, df[f], f === 0 ? 0.013 : 0.008)); }
+        return d;
+      }
+      // surface nets: one vertex per grid cell the surface passes through, one quad per grid edge it crosses
+      const h = Q.handH, ox = WX-0.056, oy = -0.064, oz = -0.060;
+      const nx = Math.ceil(0.2626/h)+1, ny = Math.ceil(0.1014/h)+1, nz = Math.ceil(0.1586/h)+1;
+      const val = new Float32Array(nx*ny*nz);
+      for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) val[i + nx*(j + ny*k)] = handSDF(ox+i*h, oy+j*h, oz+k*h);
+      const cx = nx-1, cy = ny-1, cell = new Int32Array(cx*cy*(nz-1)).fill(-1), base = G.pos.length/3;
+      const EDGES = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]], cvv = new Float32Array(8);
+      let nv = 0;
+      for (let k = 0; k < nz-1; k++) for (let j = 0; j < cy; j++) for (let i = 0; i < cx; i++) {
+        let mask = 0;
+        for (let c = 0; c < 8; c++) { const v = val[(i+(c&1)) + nx*((j+((c>>1)&1)) + ny*(k+((c>>2)&1)))]; cvv[c] = v; if (v < 0) mask |= 1<<c; }
+        if (mask === 0 || mask === 255) continue;
+        let sx = 0, sy = 0, sz = 0, cnt = 0;
+        for (const [a, b] of EDGES) {
+          const va = cvv[a], vb = cvv[b]; if ((va < 0) === (vb < 0)) continue;
+          const t = va/(va-vb);
+          sx += (a&1) + t*((b&1)-(a&1)); sy += ((a>>1)&1) + t*(((b>>1)&1)-((a>>1)&1)); sz += ((a>>2)&1) + t*(((b>>2)&1)-((a>>2)&1)); cnt++;
+        }
+        const px = ox+(i+sx/cnt)*h, py = oy+(j+sy/cnt)*h, pz = oz+(k+sz/cnt)*h;
+        cell[i + cx*(j + cy*k)] = base + nv++;
+        // bone weights: mix the palm's and each nearby finger's weights by how close this point is to each part
+        handSDF(px, py, pz);
+        const acc = new Map(), add = (list, m) => { for (const [bi, w] of list) if (w*m > 1e-5) acc.set(bi, (acc.get(bi) || 0) + w*m); };
+        add(armWeights(px, 0), Math.exp(-Math.max(dpalm,0)/0.0035));
+        for (let f = 0; f < 5; f++) if (df[f] < 0.03) add(fingerWeights(FINGERS[f], fx[f]), Math.exp(-Math.max(df[f],0)/0.0035));
+        const w = [...acc.entries()].sort((a, b) => b[1]-a[1]).slice(0, 4), sum = w.reduce((a, e) => a+e[1], 0);
+        G.pos.push(px, py, pz); G.m0.push(0,0,0); G.m1.push(0,0,0);
+        for (let q = 0; q < 4; q++) { G.si.push(w[q] ? w[q][0] : 0); G.sw.push(w[q] ? w[q][1]/sum : 0); }
+      }
+      const quad = (a, b, c, d, flip) => { if (a < 0 || b < 0 || c < 0 || d < 0) return; if (flip) G.idx.push(a,c,b, a,d,c); else G.idx.push(a,b,c, a,c,d); };
+      const C = (i, j, k) => cell[i + cx*(j + cy*k)];
+      for (let k = 1; k < nz-1; k++) for (let j = 1; j < ny-1; j++) for (let i = 1; i < nx-1; i++) {
+        const a = val[i + nx*(j + ny*k)] < 0;
+        if (a !== (val[i+1 + nx*(j + ny*k)] < 0)) quad(C(i,j-1,k-1), C(i,j,k-1), C(i,j,k), C(i,j-1,k), !a);
+        if (a !== (val[i + nx*(j+1 + ny*k)] < 0)) quad(C(i-1,j,k-1), C(i-1,j,k), C(i,j,k), C(i,j,k-1), !a);
+        if (a !== (val[i + nx*(j + ny*(k+1))] < 0)) quad(C(i-1,j-1,k), C(i,j-1,k), C(i,j,k), C(i-1,j,k), !a);
+      }
+    }
+    return G;
+  }
+
+  return { side, bones, root, upper, half, fore, tw1, tw2, tw3, hand, ut0, ut1, B, FINGERS, armWeights, buildGeometry };
+}
+
+/* ═══════════════════════════════ §3  BODY SKELETON ═══════════════════════════════
+   Body bones rest with no rotation (world-aligned), so their poses can be written as world rotations.
+   Order: pelvis, 3 spine, neck, head, clavicles, then per leg: hip half-helper, thigh, two thigh-twist helpers,
+   knee half-helper, shin, foot (ankle), toes. The arms hang off the clavicles.                              */
+const bones = [];
+const bw = new Map();                                   // bone → bind-pose world position
+function mkBodyBone(name, parent, world, len = 0, helper = false) {
+  const b = new THREE.Bone(); b.name = name;
+  const pw = parent ? bw.get(parent) : new V3();
+  b.position.set(world[0]-pw.x, world[1]-pw.y, world[2]-pw.z);
+  if (parent) parent.add(b);
+  b.userData = { rest: new Quat(), len, index: bones.length, helper };
+  bw.set(b, new V3().fromArray(world));
+  bones.push(b); return b;
+}
+const pelvis = mkBodyBone('pelvis', null, J.pelvis, 0.085);
+const spine1 = mkBodyBone('spine1', pelvis, J.spine1, 0.11);
+const spine2 = mkBodyBone('spine2', spine1, J.spine2, 0.115);
+const spine3 = mkBodyBone('spine3', spine2, J.spine3, 0.17);
+const neck   = mkBodyBone('neck',   spine3, J.neck, 0.12);
+const head   = mkBodyBone('head',   neck,   J.head, 0.19);
+const SIDES = [1, -1];                                  // index 0 = left (+X), 1 = right (-X)
+const clav = SIDES.map(s => mkBodyBone((s > 0 ? 'L' : 'R') + '_clavicle', spine3, mirrorX(J.clav, s), 0.16));
+const legs = SIDES.map(s => {
+  const n = s > 0 ? 'L_' : 'R_';
+  const L = { s };
+  L.hipHalf = mkBodyBone(n+'hipHalf', pelvis, mirrorX(J.hip, s), 0, true);
+  L.thigh   = mkBodyBone(n+'thigh',   pelvis, mirrorX(J.hip, s), THIGH);
+  L.tw0     = mkBodyBone(n+'thighTwist0', pelvis, mirrorX(J.hip, s), 0, true);
+  L.tw1     = mkBodyBone(n+'thighTwist1', pelvis, mirrorX(J.hip, s), 0, true);
+  L.kneeHalf= mkBodyBone(n+'kneeHalf', L.thigh, mirrorX(J.knee, s), 0, true);
+  L.shin    = mkBodyBone(n+'shin',    L.thigh, mirrorX(J.knee, s), SHIN);
+  L.foot    = mkBodyBone(n+'foot',    L.shin,  mirrorX(J.ankle, s), 0.15);
+  L.toe     = mkBodyBone(n+'toes',    L.foot,  mirrorX(J.ball, s), 0.06);
+  return L;
+});
+// the arms: the same rig twice; the right one is mirrored through its arm-space matrix
+const arms = SIDES.map((s, i) => {
+  const A = makeArm(s > 0 ? 'L' : 'R');
+  A.s = s; A.i = i; A.clav = clav[i];
+  A.base = bones.length;                                // global index of this arm's bone 0
+  for (const b of A.bones) { b.userData.index += A.base; bones.push(b); }
+  A.map = li => A.base + li;                            // arm-local → global bone index
+  A.shoulder0 = new V3().fromArray(mirrorX(J.shoulder, s));
+  A.mirror = new M4().makeScale(s, 1, 1);
+  A.bindM = new M4().makeTranslation(A.shoulder0.x, A.shoulder0.y, A.shoulder0.z).multiply(A.mirror);   // arm space → world, at bind
+  A.bindInv = A.bindM.clone().invert();
+  clav[i].add(A.root);
+  A.root.matrixAutoUpdate = false;
+  A.root.matrix.copy(new M4().makeTranslation(...bw.get(clav[i]).toArray()).invert().multiply(A.bindM));
+  return A;
+});
+const ARM_N = arms[0].bones.length;
+const boneIndex = b => b.userData.index;
+pelvis.updateMatrixWorld(true);
+
+/* ═══════════════════════════════ §4  BODY SURFACE (signed distance fields) ═══════════════════════════════
+   The torso, pelvis, neck, head, legs and feet are distance fields: ellipsoids and tapered capsules
+   ("round cones"), joined with a smooth minimum so every junction gets a fillet. The shoulder stub is the arm
+   tube's own distance field, so the torso blends into the exact surface the arm starts with.               */
+function sdEll(px,py,pz, cx,cy,cz, rx,ry,rz) {         // ellipsoid, approximate distance (iq): k0(k0-1)/k1
+  const x = (px-cx)/rx, y = (py-cy)/ry, z = (pz-cz)/rz, k0 = Math.sqrt(x*x+y*y+z*z), k1 = Math.sqrt(x*x/(rx*rx)+y*y/(ry*ry)+z*z/(rz*rz));
+  return k1 > 1e-9 ? k0*(k0-1)/k1 : -Math.min(rx,ry,rz);
+}
+function sdRC(px,py,pz, a, b, r1, r2) {                 // round cone between a (radius r1) and b (radius r2), exact (iq)
+  const bax = b[0]-a[0], bay = b[1]-a[1], baz = b[2]-a[2], l2 = bax*bax+bay*bay+baz*baz, rr = r1-r2, a2 = l2-rr*rr, il2 = 1/l2;
+  const pax = px-a[0], pay = py-a[1], paz = pz-a[2], y = pax*bax+pay*bay+paz*baz, z = y-l2;
+  const qx = pax*l2-bax*y, qy = pay*l2-bay*y, qz = paz*l2-baz*y, x2 = qx*qx+qy*qy+qz*qz, y2 = y*y*l2, z2 = z*z*l2;
+  const k = Math.sign(rr)*rr*rr*x2;
+  if (Math.sign(z)*a2*z2 > k) return Math.sqrt(x2+z2)*il2 - r2;
+  if (Math.sign(y)*a2*y2 < k) return Math.sqrt(x2+y2)*il2 - r1;
+  return (Math.sqrt(x2*a2*il2)+y*rr)*il2 - r1;
+}
+// Parts are written for the left side (x ≥ 0) and the field is mirror-symmetric: evaluate at |x|.
+function torsoSDF(x, y, z) {
+  let d = sdEll(x,y,z, 0,0.935,-0.008, 0.160,0.120,0.112);                              // pelvis
+  d = smin(d, sdEll(x,y,z, 0.068,0.880,-0.050, 0.088,0.098,0.078), 0.04);               // glutes
+  d = smin(d, sdEll(x,y,z, 0,1.075,0.004, 0.128,0.135,0.098), 0.07);                     // belly and waist
+  d = smin(d, sdEll(x,y,z, 0,1.255,-0.008, 0.146,0.182,0.110), 0.07);                    // ribcage
+  d = smin(d, sdEll(x,y,z, 0.066,1.318,0.036, 0.088,0.058,0.050), 0.05);                 // pectorals
+  d = smin(d, sdEll(x,y,z, 0.078,1.270,-0.048, 0.080,0.140,0.064), 0.04);                // upper back, lats
+  d = smin(d, sdRC(x,y,z, [0.02,1.405,0.012], [0.150,1.428,-0.010], 0.048, 0.050), 0.05); // shoulder girdle
+  d = smin(d, sdRC(x,y,z, [0,1.470,-0.040], [0.140,1.430,-0.026], 0.044, 0.038), 0.05);   // trapezius
+  d = smin(d, sdRC(x,y,z, [0,1.400,-0.020], [0,1.590,-0.002], 0.058, 0.051), 0.035);      // neck
+  // shoulder stub: the arm tube's own field, a hair inside it, cut off well inside the arm
+  const ax = x - J.shoulder[0], ay = y - J.shoulder[1], az = z - J.shoulder[2];
+  let stub = Math.max(armTubeSDF(ax, ay, az) + 0.0015, ax - 0.10);
+  stub = Math.max(stub, -0.07 - ax);
+  d = smin(d, stub, 0.045);
+  return d;
+}
+function headSDF(x, y, z) {
+  let d = sdEll(x,y,z, 0,1.668,-0.012, 0.077,0.098,0.100);                              // cranium
+  d = smin(d, sdEll(x,y,z, 0,1.612,0.030, 0.058,0.072,0.066), 0.035);                   // face
+  d = smin(d, sdRC(x,y,z, [0.054,1.622,-0.004], [0.022,1.550,0.058], 0.017, 0.017), 0.03); // jaw line
+  d = smin(d, sdEll(x,y,z, 0,1.548,0.064, 0.026,0.022,0.024), 0.02);                     // chin
+  d = smin(d, sdEll(x,y,z, 0.040,1.627,0.062, 0.028,0.024,0.026), 0.02);                 // cheeks
+  d = smin(d, sdRC(x,y,z, [0.044,1.680,0.074], [0,1.684,0.084], 0.008, 0.008), 0.02);      // brow ridge
+  d = smin(d, sdRC(x,y,z, [0,1.660,0.094], [0,1.616,0.112], 0.007, 0.0115), 0.012);      // nose
+  d = smin(d, sdEll(x,y,z, 0.012,1.612,0.106, 0.010,0.008,0.010), 0.008);                // nostril wings
+  d = smin(d, sdEll(x,y,z, 0,1.588,0.094, 0.020,0.0085,0.009), 0.012);                   // lips
+  d = smax(d, -sdEll(x,y,z, 0,1.581,0.110, 0.019,0.0016,0.01), 0.003);                    // mouth line
+  d = smin(d, sdEll(x,y,z, 0.079,1.648,-0.010, 0.010,0.029,0.019), 0.012);               // ears
+  d = smax(d, -sdEll(x,y,z, J.eye[0],J.eye[1],J.eye[2]+0.016, 0.019,0.013,0.016), 0.008); // eye sockets
+  // eyelids: shells just outside the eyeball, cut off above and below the opening
+  const lid = sdEll(x,y,z, J.eye[0],J.eye[1],J.eye[2], 0.0132,0.0132,0.0132);
+  d = smin(d, Math.max(lid, J.eye[1]+0.0035 - y), 0.004);
+  d = smin(d, Math.max(lid, y - (J.eye[1]-0.0068)), 0.004);
+  return d;
+}
+function legSDF(x, y, z) {                              // left leg (x > 0)
+  let d = sdRC(x,y,z, [0.086,0.880,0.000], [0.090,0.500,0.010], 0.090, 0.056);          // thigh
+  d = smin(d, sdEll(x,y,z, 0.093,0.700,0.028, 0.058,0.150,0.056), 0.04);                 // quadriceps
+  d = smin(d, sdEll(x,y,z, 0.070,0.730,-0.020, 0.050,0.150,0.055), 0.04);                // hamstrings / adductors
+  d = smin(d, sdEll(x,y,z, 0.091,0.490,0.010, 0.046,0.052,0.046), 0.04);                 // knee
+  d = smin(d, sdEll(x,y,z, 0.091,0.495,0.048, 0.026,0.030,0.016), 0.015);                // kneecap
+  d = smin(d, sdRC(x,y,z, [0.090,0.470,0.006], [0.092,0.105,-0.010], 0.046, 0.030), 0.03); // shin
+  d = smin(d, sdEll(x,y,z, 0.094,0.355,-0.028, 0.044,0.105,0.042), 0.04);                // calf
+  d = smin(d, sdEll(x,y,z, 0.092,0.082,-0.012, 0.035,0.030,0.030), 0.03);                // ankle
+  // foot: heel, arch and toes, with a flat sole at y = 0
+  let f = sdEll(x,y,z, 0.092,0.040,-0.032, 0.032,0.040,0.042);
+  f = smin(f, sdEll(x,y,z, 0.094,0.034,0.062, 0.042,0.034,0.100), 0.04);
+  f = smin(f, sdEll(x,y,z, 0.097,0.019,0.160, 0.045,0.019,0.048), 0.045);
+  f = smin(f, sdEll(x,y,z, 0.080,0.019,0.190, 0.018,0.015,0.022), 0.02);                  // big toe
+  d = smin(d, f, 0.035);
+  return smax(d, -y, 0.006);
+}
+function bodySDF(x, y, z) {
+  const ax = Math.abs(x);
+  let d = torsoSDF(ax, y, z);
+  if (y > 1.45) d = smin(d, headSDF(ax, y, z), 0.025);
+  if (y < 0.98) d = smin(d, legSDF(ax, y, z), 0.035);
+  return d;
+}
+
+/* Surface nets on a regular grid, with two refinements over the hand's version:
+   - a coarse pass first: where the coarse field is far from zero the fine cells cannot hold surface, so they are
+     filled from the coarse value instead of being evaluated (about 6× fewer field evaluations);
+   - each vertex is then pulled onto the surface with a Newton step along the field gradient, which removes the
+     faceting of plain surface nets.                                                                         */
+function surfaceNets(sdf, [x0,y0,z0], [x1,y1,z1], h) {
+  const nx = Math.ceil((x1-x0)/h)+1, ny = Math.ceil((y1-y0)/h)+1, nz = Math.ceil((z1-z0)/h)+1;
+  const C = 4, cnx = Math.ceil(nx/C)+1, cny = Math.ceil(ny/C)+1, cnz = Math.ceil(nz/C)+1;
+  const coarse = new Float32Array(cnx*cny*cnz);
+  for (let k = 0; k < cnz; k++) for (let j = 0; j < cny; j++) for (let i = 0; i < cnx; i++) coarse[i + cnx*(j + cny*k)] = sdf(x0+i*C*h, y0+j*C*h, z0+k*C*h);
+  const val = new Float32Array(nx*ny*nz), far = C*h*1.6;
+  for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const cv = coarse[Math.round(i/C) + cnx*(Math.round(j/C) + cny*Math.round(k/C))];
+    val[i + nx*(j + ny*k)] = Math.abs(cv) > far ? cv : sdf(x0+i*h, y0+j*h, z0+k*h);
+  }
+  const pos = [], idx = [], nrm = [];
+  const cx = nx-1, cy = ny-1, cell = new Int32Array(cx*cy*(nz-1)).fill(-1);
+  const EDGES = [[0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]], cvv = new Float32Array(8);
+  let nv = 0; const e = h*0.35;
+  for (let k = 0; k < nz-1; k++) for (let j = 0; j < cy; j++) for (let i = 0; i < cx; i++) {
+    let mask = 0;
+    for (let c = 0; c < 8; c++) { const v = val[(i+(c&1)) + nx*((j+((c>>1)&1)) + ny*(k+((c>>2)&1)))]; cvv[c] = v; if (v < 0) mask |= 1<<c; }
+    if (mask === 0 || mask === 255) continue;
+    let sx = 0, sy = 0, sz = 0, cnt = 0;
+    for (const [a, b] of EDGES) {
+      const va = cvv[a], vb = cvv[b]; if ((va < 0) === (vb < 0)) continue;
+      const t = va/(va-vb);
+      sx += (a&1) + t*((b&1)-(a&1)); sy += ((a>>1)&1) + t*(((b>>1)&1)-((a>>1)&1)); sz += ((a>>2)&1) + t*(((b>>2)&1)-((a>>2)&1)); cnt++;
+    }
+    let px = x0+(i+sx/cnt)*h, py = y0+(j+sy/cnt)*h, pz = z0+(k+sz/cnt)*h;
+    // Newton step: p ← p − f(p)·∇f/|∇f|², limited to half a cell so it can never jump to another sheet
+    let gx = 0, gy = 0, gz = 0;
+    for (let it = 0; it < 2; it++) {
+      const f = sdf(px, py, pz);
+      gx = sdf(px+e,py,pz) - sdf(px-e,py,pz); gy = sdf(px,py+e,pz) - sdf(px,py-e,pz); gz = sdf(px,py,pz+e) - sdf(px,py,pz-e);
+      const g2 = (gx*gx+gy*gy+gz*gz)/(4*e*e);
+      if (g2 < 1e-6) break;
+      const s = f/g2/(2*e); let dx = -s*gx, dy = -s*gy, dz = -s*gz; const dl = Math.hypot(dx,dy,dz), lim = h*0.5;
+      if (dl > lim) { dx *= lim/dl; dy *= lim/dl; dz *= lim/dl; }
+      px += dx; py += dy; pz += dz;
+    }
+    const gl = Math.hypot(gx,gy,gz) || 1;
+    pos.push(px, py, pz); nrm.push(gx/gl, gy/gl, gz/gl);
+    cell[i + cx*(j + cy*k)] = nv++;
+  }
+  const quad = (a, b, c, d, flip) => { if (a < 0 || b < 0 || c < 0 || d < 0) return; if (flip) idx.push(a,c,b, a,d,c); else idx.push(a,b,c, a,c,d); };
+  const Cc = (i, j, k) => cell[i + cx*(j + cy*k)];
+  for (let k = 1; k < nz-1; k++) for (let j = 1; j < ny-1; j++) for (let i = 1; i < nx-1; i++) {
+    const a = val[i + nx*(j + ny*k)] < 0;
+    if (a !== (val[i+1 + nx*(j + ny*k)] < 0)) quad(Cc(i,j-1,k-1), Cc(i,j,k-1), Cc(i,j,k), Cc(i,j-1,k), !a);
+    if (a !== (val[i + nx*(j+1 + ny*k)] < 0)) quad(Cc(i-1,j,k-1), Cc(i-1,j,k), Cc(i,j,k), Cc(i,j,k-1), !a);
+    if (a !== (val[i + nx*(j + ny*(k+1))] < 0)) quad(Cc(i-1,j-1,k), Cc(i,j-1,k), Cc(i,j,k), Cc(i-1,j,k), !a);
+  }
+  return { pos, idx, nrm };
+}
+
+/* ═══════════════════════════════ §5  BODY SKIN WEIGHTS ═══════════════════════════════
+   Painted procedurally from the bind-pose position, in the same spirit as the arm:
+   - joints that fold one way get a narrow band on the inside of the bend (a clean crease where the two
+     segments press together) and a wide band on the outside (smooth stretch over the point);
+   - each hinge and the hip has a half-angle helper bone that owns the band in the middle of the joint;
+   - roll is spread along the thigh and upper arm by twist helpers;
+   - around the shoulder, the body and the start of the arm tube read the SAME weight field, so where they
+     overlap they move together and the tube stays buried in the torso.                                      */
+const W = new Map();
+const wAdd = (b, w) => { if (w > 1e-5) W.set(b, (W.get(b) || 0) + w); };
+function spineWeights(x, y, z, m) {
+  const ax = Math.abs(x);
+  // joint bands along the spine (smooth: the spine bends over several vertebrae)
+  const t1 = smooth(1.005, 1.085, y), t2 = smooth(1.115, 1.195, y), t3 = smooth(1.225, 1.315, y);
+  // neck: only the column itself; the slope of the trapezius toward the shoulder stays with the chest
+  const yb = 1.425 + 0.35*Math.max(0, -z - 0.0);                   // the neck starts higher at the back
+  const t4 = smooth(yb - 0.03, yb + 0.04, y)*(1 - smooth(0.045, 0.085, ax));
+  // head: the boundary is tilted, under the jaw at the front and at the base of the skull at the back
+  const yh = 1.556 - 0.42*z, t5 = smooth(yh - 0.012, yh + 0.014, y);
+  const n4 = Math.max(t4, t5);
+  let sh = [[boneIndex(pelvis), 1-t1], [boneIndex(spine1), t1-t2], [boneIndex(spine2), t2-t3], [boneIndex(spine3), t3*(1-n4)],
+            [boneIndex(neck), n4*(1-t5)], [boneIndex(head), t5]];
+  // clavicle: the top of the shoulder girdle, from the root of the neck out to the shoulder
+  const cl = smooth(0.05, 0.13, ax)*smooth(1.30, 1.40, y)*(1 - t5);
+  const ci = boneIndex(clav[x >= 0 ? 0 : 1]);
+  for (const [b, w] of sh) wAdd(b, w*(1-cl)*m);
+  wAdd(ci, cl*m);
+}
+// The shoulder field: torso weights blended into the arm's own painted weights, as a function of arm-space x
+// and the distance from the arm axis. Used for body vertices and for the buried start of the arm tube alike.
+function shoulderWeights(x, y, z, m, torso) {
+  const A = arms[x >= 0 ? 0 : 1];
+  const xa = (x - A.shoulder0.x)*A.s, ya = y - A.shoulder0.y, za = z - A.shoulder0.z;
+  const ra = Math.hypot(ya, za);
+  const k = smooth(-0.085, -0.005, xa)*(1 - smooth(0.085, 0.13, ra));
+  if (k < 1) torso(x, y, z, m*(1-k));
+  if (k > 0) for (const [b, w] of A.armWeights(xa, Math.atan2(za, ya))) wAdd(A.map(b), w*k*m);
+}
+function legWeights(x, y, z, m) {
+  const L = legs[x >= 0 ? 0 : 1], ax = Math.abs(x);
+  // around the knee axis: kf = 1 at the front (kneecap), 0 at the back (the inside of the bend)
+  const rz = z - J.knee[2], rx = ax - J.knee[0], r = Math.hypot(rx, rz) || 1e-6, kf = (1 + rz/r)/2;
+  const wk = lerp(0.012, 0.075, kf*kf*(3-2*kf)), u = J.knee[1] - y;
+  const eu = 1 - smooth(-wk, 0, u), ef = smooth(0, wk, u);
+  // thigh roll spread over the twist helpers (none at the hip, all of it at the knee)
+  const a = smooth(0.70, 0.79, y), b = smooth(0.60, 0.69, y);
+  wAdd(boneIndex(L.tw0), eu*a*m); wAdd(boneIndex(L.tw1), eu*(b-a)*m); wAdd(boneIndex(L.thigh), eu*(1-b)*m);
+  wAdd(boneIndex(L.kneeHalf), (1-eu-ef)*m);
+  // shin → foot at the ankle, foot → toes at the ball
+  const fw = 1 - smooth(0.055, 0.118, y + 0.25*Math.max(0, -0.03 - z)), tw = smooth(0.115, 0.148, z - J.ankle[2] + 0.012);
+  wAdd(boneIndex(L.shin), ef*(1-fw)*m); wAdd(boneIndex(L.foot), ef*fw*(1-tw)*m); wAdd(boneIndex(L.toe), ef*fw*tw*m);
+}
+function bodyWeights(x, y, z) {
+  W.clear();
+  const L = legs[x >= 0 ? 0 : 1], ax = Math.abs(x);
+  // hip crease: a rigid fold at the front (groin), a wide blend at the back (the buttock stretches over the
+  // hip as the thigh flexes), in between at the side
+  const rx = ax - J.hip[0], rz = z - J.hip[2], r = Math.hypot(rx, rz) || 1e-6, kf = (1 + rz/r)/2;
+  const c = lerp(0.835, 0.882, kf), w = lerp(0.115, 0.018, kf*kf*(3-2*kf)), u = c - y;
+  let leg = smooth(0, w, u), half = 1 - (1 - smooth(-w, 0, u)) - leg;
+  const med = smooth(0.004, 0.035, ax);                          // the crotch stays with the pelvis
+  leg *= med; half *= med;
+  if (1 - leg - half > 1e-4) shoulderWeights(x, y, z, 1 - leg - half, spineWeights);
+  wAdd(boneIndex(L.hipHalf), half);
+  if (leg > 1e-4) legWeights(x, y, z, leg);
+  return W;
+}
+function top4(map) {
+  const w = [...map.entries()].sort((a, b) => b[1]-a[1]).slice(0, 4), sum = w.reduce((a, e) => a+e[1], 0) || 1;
+  return w.map(([b, v]) => [b, v/sum]);
+}
+
+/* ═══════════════════════════════ §6  ASSEMBLY ═══════════════════════════════
+   One skinned mesh: the body surface plus the two arms (one arm-space geometry, placed twice).
+   Morph targets: 0/1 left biceps/forearm, 2/3 right biceps/forearm, 4/5 left/right quadriceps,
+   6/7 left/right calf, 8 breath.                                                                           */
+const MORPH = { bicep:[0,2], fore:[1,3], quad:[4,5], calf:[6,7], breath:8, N:9 };
+const QUALITY = {
+  high: { label:'High', handH:0.0015, tubeN:96, tubeR:32, bodyH:0.0065 },
+  low:  { label:'Low',  handH:0.0026, tubeN:56, tubeR:20, bodyH:0.0115 },
+};
+const boneColor = bones.map((b,i) => new THREE.Color().setHSL((i*0.61803)%1, 0.75, 0.55));
+function buildFigure(Q) {
+  const t0 = performance.now();
+  const pos = [], idx = [], si = [], sw = [], col = [], morph = Array.from({ length: MORPH.N }, () => []);
+  const pushVert = (x, y, z, wts, mo) => {
+    pos.push(x, y, z);
+    const c = new THREE.Color(0,0,0);
+    for (let k = 0; k < 4; k++) {
+      const e = wts[k]; si.push(e ? e[0] : 0); sw.push(e ? e[1] : 0);
+      if (e) { const bc = boneColor[e[0]]; c.r += bc.r*e[1]; c.g += bc.g*e[1]; c.b += bc.b*e[1]; }
+    }
+    col.push(c.r, c.g, c.b);
+    for (let m = 0; m < MORPH.N; m++) { const d = mo && mo[m]; morph[m].push(d ? d[0] : 0, d ? d[1] : 0, d ? d[2] : 0); }
+  };
+  // ── body
+  const body = surfaceNets(bodySDF, [-0.31, -0.004, -0.17], [0.31, 1.775, 0.245], Q.bodyH);
+  for (let v = 0; v < body.pos.length/3; v++) {
+    const x = body.pos[3*v], y = body.pos[3*v+1], z = body.pos[3*v+2], nx = body.nrm[3*v], ny = body.nrm[3*v+1], nz = body.nrm[3*v+2];
+    const mo = {}, side = x >= 0 ? 0 : 1, ax = Math.abs(x);
+    // quadriceps swell at the front of the thigh, the calf at the back of the shin, breath in the chest and belly
+    const q = 0.011*gauss(y, 0.66, 0.10)*Math.max(0, nz*0.9 + (ax-0.09)*3)*smooth(0.02, 0.05, ax);
+    if (q > 1e-5 && y < 0.86) mo[MORPH.quad[side]] = [nx*q, ny*q, nz*q];
+    const cf = 0.010*gauss(y, 0.36, 0.06)*Math.max(0, -nz);
+    if (cf > 1e-5 && y < 0.5) mo[MORPH.calf[side]] = [nx*cf, ny*cf, nz*cf];
+    const br = (0.007*gauss(y, 1.27, 0.09)*smooth(-0.06, 0.06, z) + 0.006*gauss(y, 1.08, 0.06)*smooth(0.0, 0.08, z))*(1 - smooth(0.12, 0.17, ax));
+    if (br > 1e-5) mo[MORPH.breath] = [nx*br, ny*br, nz*br];
+    pushVert(x, y, z, top4(bodyWeights(x, y, z)), mo);
+  }
+  for (const i of body.idx) idx.push(i);
+  // ── arms: the left arm builds its arm-space skin once; each side places it through its bind matrix
+  const AG = arms[0].buildGeometry(Q), nA = AG.pos.length/3, p = new V3(), d = new V3();
+  for (const A of arms) {
+    const base = pos.length/3;
+    for (let v = 0; v < nA; v++) {
+      p.set(AG.pos[3*v], AG.pos[3*v+1], AG.pos[3*v+2]);
+      const xa = p.x; p.applyMatrix4(A.bindM);
+      let wts;
+      if (xa < 0.075) { W.clear(); shoulderWeights(p.x, p.y, p.z, 1, spineWeights); wts = top4(W); }      // the buried start of the tube
+      else { wts = []; for (let k = 0; k < 4; k++) if (AG.sw[4*v+k] > 0) wts.push([A.map(AG.si[4*v+k]), AG.sw[4*v+k]]); }
+      const mo = {};
+      d.set(AG.m0[3*v], AG.m0[3*v+1], AG.m0[3*v+2]).applyMatrix4(A.mirror); if (d.lengthSq() > 0) mo[MORPH.bicep[A.i]] = d.toArray();
+      d.set(AG.m1[3*v], AG.m1[3*v+1], AG.m1[3*v+2]).applyMatrix4(A.mirror); if (d.lengthSq() > 0) mo[MORPH.fore[A.i]] = d.toArray();
+      pushVert(p.x, p.y, p.z, wts, mo);
+    }
+    for (let t = 0; t < AG.idx.length; t += 3) {      // a mirror flips the winding
+      if (A.s > 0) idx.push(base+AG.idx[t], base+AG.idx[t+1], base+AG.idx[t+2]);
+      else idx.push(base+AG.idx[t], base+AG.idx[t+2], base+AG.idx[t+1]);
     }
   }
-  return false;
-}
-function resolveFinger(f, d0, d1, d2, sp, overTable, dt) {
-  // Each finger keeps the pose it had last frame and moves from there, a limited amount per frame:
-  //  - if something has moved into it, it uncurls a little at a time until it is clear;
-  //  - otherwise each joint, knuckle first, moves toward where it wants to be and stops where it would press in.
-  // Joints that are blocked wait while the rest keep closing, which is what wraps a grip around an object.
-  // Because the pose only ever changes by small steps, contact is smooth instead of snapping between solutions.
-  const F = FINGERS[f], S = HS[f], P = S.p, q = S.pose, want = [d0, d1, d2];
-  const lo = F.thumb ? [-0.6, -0.1, -0.1] : [-0.3, 0, 0];
-  const hit = () => { chain(F, q[0], q[1], q[2], q[3], P); return hits(f, P, 0, overTable); };
-  const maxStep = 12*dt;
-  q[3] += clamp(sp - q[3], -maxStep, maxStep);
-  if (hit()) {
-    const c0 = q[0], c1 = q[1], c2 = q[2], set = u => { q[0] = lerp(c0, lo[0], u); q[1] = lerp(c1, lo[1], u*0.7); q[2] = lerp(c2, lo[2], u*0.7); };
-    set(1);
-    if (hit()) {
-      // even fully uncurled it is still touching, so opening this finger cannot help: hold the pose rather than flinging it open
-      set(0);
-      if (overTable) { chain(F, q[0], q[1], q[2], q[3], P); for (let k = F.thumb ? 1 : 0; k < 3; k++) needLift = Math.max(needLift, TY + F.sr[k] - (cv2.copy(P[k+1]).applyQuaternion(Qh).y + W.y)); }
-    } else {
-      // uncurl by the smallest amount that clears it, and no faster than a finger can move
-      let a = 0, b = 1; for (let i = 0; i < 6; i++) { const m = (a+b)/2; set(m); if (hit()) a = m; else b = m; }
-      const span = Math.max(1e-4, Math.abs(c0-lo[0]), Math.abs(c1-lo[1])*0.7, Math.abs(c2-lo[2])*0.7);
-      set(Math.min(b, maxStep/span));
-    }
-  } else {
-    for (let j = 0; j < 3; j++) {
-      const from = q[j], step = clamp(want[j] - from, -maxStep, maxStep);
-      if (Math.abs(step) < 1e-5) continue;
-      q[j] = from + step;
-      if (hit()) { let a = 0, b = 1; for (let i = 0; i < 5; i++) { const m = (a+b)/2; q[j] = from + step*m; if (hit()) b = m; else a = m; } q[j] = from + step*a; }
-    }
-  }
-  chain(F, q[0], q[1], q[2], q[3], P);
-}
-function levelWrist(slope) {                           // wrist flex that makes the hand point along a given slope (0 = level)
-  const A = tv.set(1,0,0).applyQuaternion(Qt).y, Bq = tv.set(0,1,0).applyQuaternion(Qt).y, R = Math.hypot(A, Bq);
-  if (R < 1e-4) return 0;
-  const p0 = Math.atan2(Bq, A), d = Math.acos(clamp(Math.sin(slope)/R, -1, 1)), w1 = p0 - d, w2 = p0 + d;
-  return clamp(Math.abs(w1) < Math.abs(w2) ? w1 : w2, -0.9, 0.9);
-}
-function tipY(F, c0, c1, c2) {                        // world height of a fingertip for given joint curls
-  const a1 = c0+c1, a2 = a1+c2, l = F.len;
-  return tv.set(l[0]*Math.cos(c0)+l[1]*Math.cos(a1)+l[2]*Math.cos(a2), -(l[0]*Math.sin(c0)+l[1]*Math.sin(a1)+l[2]*Math.sin(a2)), 0)
-    .applyQuaternion(F.quat).add(tv2.fromArray(F.base)).applyQuaternion(Qh).y + W.y;
-}
-function update(dt) {
-  time += dt;
-  orbS.get(orbPos);
-  P.roll = 0;
-  MODES[mode].fn(time, dt);
-
-  // overlapping action: the hand and fingers drag behind the wrist's velocity (vf, in the forearm frame)
-  const dragF = clamp(vf.y*0.55, -0.45, 0.45), dragD = clamp(vf.z*0.55, -0.4, 0.4);
-  P.tgt.y += pushUp;
-  tgtS.to(P.tgt, P.tgtW); poleS.to(P.pole); palmS.to(P.palm);
-  wflexS.t = clamp(P.wflex - dragF, -1.2, 1.0); wdevS.t = clamp(P.wdev + dragD, -0.5, 0.5);
-  for (let f = 0; f < 5; f++) {
-    for (let j = 0; j < 3; j++) {
-      // fingers share tendons: moving one drags its neighbours part of the way (the ring finger most of all)
-      const c = P.curl, want = f === 0 ? c[0][j] : f === 1 ? 0.88*c[1][j]+0.12*c[2][j] : f === 2 ? 0.10*c[1][j]+0.75*c[2][j]+0.15*c[3][j]
-                         : f === 3 ? 0.20*c[2][j]+0.60*c[3][j]+0.20*c[4][j] : 0.25*c[3][j]+0.75*c[4][j];
-      const lim = (f === 0 ? [[-0.6,1.2],[-0.1,1.4],[-0.1,1.4]] : [[-0.3,1.6],[0,1.9],[0,1.45]])[j];   // how far each joint can really go
-      curlS[f][j].t = clamp(want + clamp(vf.y*0.5, -0.15, 0.4)*(0.5+0.35*j), lim[0], lim[1]);
-    }
-    spreadS[f].t = P.spread[f];
-  }
-  tenseS.t = P.tense; rollS.t = P.roll; orbVis.t = mode === 'reach' || mode === 'pick' ? 1 : 0;
-  const n = Math.max(1, Math.ceil(dt/0.006)); for (let i = 0; i < n; i++) stepSprings(dt/n);
-
-  // ── analytic two-bone IK with a pole vector
-  shS.get(S); root.position.copy(S);
-  tgtS.get(toT).sub(S); const dist = toT.length() || 1e-6; dir.copy(toT).divideScalar(dist);
-  const d = clamp(dist, 0.18, L1+L2-0.004);
-  shS.to(tv.copy(dir).multiplyScalar(0.03*smooth(0.38,0.58,dist)).add(tv2.set(0, 0.018*Math.max(0,dir.y), 0)));  // shoulder leans into long reaches
-  poleS.get(perp).normalize(); perp.addScaledVector(dir, -perp.dot(dir));
-  if (perp.lengthSq() < 1e-5) perp.set(0.3,-1,0.2).addScaledVector(dir, -tv.set(0.3,-1,0.2).dot(dir));
-  perp.normalize();
-  const x = (L1*L1 - L2*L2 + d*d)/(2*d), h = Math.sqrt(Math.max(0, L1*L1 - x*x));
-  E.copy(S).addScaledVector(dir, x).addScaledVector(perp, h);
-  W.copy(S).addScaledVector(dir, d);
-  Xu.copy(E).sub(S).normalize();
-  Zu.copy(perp).negate(); Zu.addScaledVector(Xu, -Zu.dot(Xu)).normalize();
-  Yu.crossVectors(Zu, Xu);
-  Qu.setFromRotationMatrix(M.makeBasis(Xu, Yu, Zu));
-  flex = PI - Math.acos(clamp((L1*L1 + L2*L2 - d*d)/(2*L1*L2), -1, 1));
-  Qf.copy(Qu).multiply(q1.setFromAxisAngle(AY, -flex));
-
-  // ── forearm twist: roll about the forearm until the palm faces the wanted direction, within anatomical limits
-  palmS.get(D).normalize().applyQuaternion(q1.copy(Qf).invert());
-  if (Math.hypot(D.y, D.z) > 0.2) twS.t = clamp(Math.atan2(-D.z, -D.y), -1.4, 1.5);
-  const tw = twS.x;
-  Qt.copy(Qf).multiply(q1.setFromAxisAngle(AX, tw));
-
-  upper.quaternion.copy(Qu);
-  half.quaternion.setFromAxisAngle(AY, -flex/2);
-  // corrective: a mitre joint is wider across the bisector by 1/cos(angle/2). Stretching the half-angle
-  // bone that way keeps the inner crease from caving into a pit and gives the elbow its point.
-  half.scale.z = Math.min(1.45, 1 + 0.5*(1/Math.cos(flex/2) - 1));
-  fore.quaternion.setFromAxisAngle(AY, -flex);
-  q1.setFromAxisAngle(AX, tw/3); tw1.quaternion.copy(q1); tw2.quaternion.copy(q1); tw3.quaternion.copy(q1);
-  hand.quaternion.setFromEuler(eul.set(0, wdevS.x, wflexS.x, 'YZX'));
-  Qh.copy(Qt).multiply(hand.quaternion);
-  palmPoint.set(0.075,-0.046,0).applyQuaternion(Qh).add(W);
-
-  // ── fingers: resolve contacts in hand space, then pose the bones (thumb last: it yields to the fingers)
-  thumbRoll = rollS.x;
-  orbOn = orbVis.x > 0.5; if (orbOn) orbH.copy(orbPos).sub(W).applyQuaternion(q1.copy(Qh).invert());
-  const overTable = W.z > 0.2, ka = 1 - Math.exp(-dt*40);
-  needLift = 0;
-  for (const f of [1,2,3,4,0]) {
-    const F = FINGERS[f], b = F.bones, c = curlS[f], S = HS[f];
-    resolveFinger(f, c[0].x, c[1].x, c[2].x, spreadS[f].x, overTable, dt);
-    for (let i = 0; i < 4; i++) S.sm[i] += (S.pose[i] - S.sm[i])*ka;
-    const c0 = S.sm[0], c1 = S.sm[1], c2 = S.sm[2];
-    q1.setFromAxisAngle(AY, S.sm[3]*F.spreadSign + F.fanFix); if (F.thumb) q1.multiply(q2.setFromAxisAngle(AX, thumbRoll));
-    b[0].quaternion.copy(b[0].userData.rest).multiply(q1).multiply(q2.setFromAxisAngle(AZ, -c0));
-    b[1].quaternion.setFromAxisAngle(AZ, -c1);
-    b[2].quaternion.setFromAxisAngle(AZ, -c2);
-    const hb = F.helpers;
-    hb[0].quaternion.copy(b[0].userData.rest).multiply(q1).multiply(q2.setFromAxisAngle(AZ, -c0/2));
-    hb[1].quaternion.setFromAxisAngle(AZ, -c1/2);
-    hb[2].quaternion.setFromAxisAngle(AZ, -c2/2);
-  }
-  pushUp = clamp(needLift > 0 ? pushUp + needLift*Math.min(1, dt*10) : pushUp - 0.08*dt, 0, 0.05);
-  bicepS.t = smooth(0.4, 2.2, flex)*0.85 + tenseS.x*0.5;
-  arm.morphTargetInfluences[0] = bicepS.x; arm.morphTargetInfluences[1] = tenseS.x;
-
-  // wrist velocity in the forearm frame feeds next frame's drag
-  tv.copy(W).sub(Wprev).divideScalar(Math.max(dt, 1e-4)).applyQuaternion(q1.copy(Qt).invert());
-  vf.lerp(tv, 1 - Math.exp(-dt*10)); Wprev.copy(W);
-
-  orb.position.copy(orbPos); orb.scale.setScalar(Math.max(0.001, orbVis.x)); orb.visible = orbVis.x > 0.02;
-  orb.material.emissiveIntensity = 0.55 + 1.1*grip;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position',   new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color',      new THREE.Float32BufferAttribute(col, 3));
+  geo.setAttribute('skinIndex',  new THREE.Uint16BufferAttribute(si, 4));
+  geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(sw, 4));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  geo.morphAttributes.position = morph.map(m => new THREE.Float32BufferAttribute(m, 3));
+  geo.morphTargetsRelative = true;
+  geo.userData = { ms: performance.now() - t0, verts: pos.length/3, tris: idx.length/3, bodyVerts: body.pos.length/3, armVerts: nA };
+  return geo;
 }
 
-/* ───────────────────────── UI ───────────────────────── */
-const $ = id => document.getElementById(id);
-function setMode(m) {
-  mode = m; paused = false; $('hint').textContent = MODES[m].hint;
-  for (const b of $('modes').children) { const on = b.dataset.k === m; b.classList.toggle('on', on); if (on) $('modes').scrollTo({ left: b.offsetLeft - ($('modes').clientWidth - b.offsetWidth)/2, behavior:'smooth' }); }
-  if (m === 'reach') hold = 0.4; else grip = 0;
-  if (m === 'pick') { MODES.pick.tp = 0; MODES.pick.held = false; }
-  pushUp = 0;
-}
-const VIEWS = { skin:'Skin', xray:'X-ray', weights:'Weights' };
-function setView(v) {
-  view = v;
-  for (const b of $('views').children) b.classList.toggle('on', b.dataset.k === v);
-  arm.material = v === 'xray' ? xrayMat : v === 'weights' ? weightMat : skinMat;
-  arm.visible = v !== 'bones'; arm.castShadow = v !== 'xray';
-  for (const g of boneViz) g.visible = v === 'xray' || v === 'bones';
-  for (const nl of nails) nl.visible = v === 'skin';
-}
-for (const [k, m] of Object.entries(MODES)) { const b = document.createElement('button'); b.textContent = m.label; b.dataset.k = k; b.onclick = () => setMode(k); $('modes').append(b); }
-for (const [k, l] of Object.entries(VIEWS)) { const b = document.createElement('button'); b.textContent = l; b.dataset.k = k; b.onclick = () => setView(k); $('views').append(b); }
-addEventListener('keydown', e => {
-  const ks = Object.keys(MODES), i = +e.key - 1;
-  if (ks[i]) setMode(ks[i]);
-  if (e.key === ' ') { paused = !paused; e.preventDefault(); }
-  if (e.key === 'x') setView(view === 'xray' ? 'skin' : 'xray');
+/* ═══════════════════════════════ §7  SCENE ═══════════════════════════════ */
+const params = new URLSearchParams(location.search);
+let quality = params.get('q') || (matchMedia('(pointer:coarse)').matches ? 'low' : 'high');
+const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true, powerPreference:'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+document.body.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(36, innerWidth/innerHeight, 0.05, 60);
+camera.position.set(1.7, 1.35, 3.3);
+
+const hemi = new THREE.HemisphereLight(0xc9d8ff, 0x3a2a24, 0.9); scene.add(hemi);
+const keyL = new THREE.DirectionalLight(0xfff0de, 2.8);
+keyL.position.set(1.6, 3.4, 2.6); keyL.target.position.set(0, 0.9, 0); scene.add(keyL, keyL.target);
+keyL.castShadow = true; keyL.shadow.mapSize.set(2048,2048);
+Object.assign(keyL.shadow.camera, { left:-1.4, right:1.4, top:1.4, bottom:-1.4, near:0.5, far:9 });
+keyL.shadow.bias = -0.0003; keyL.shadow.normalBias = 0.01;
+const rim = new THREE.DirectionalLight(0x86b4ff, 1.4); rim.position.set(-1.5, 2.2, -3.0); scene.add(rim);
+const fill = new THREE.DirectionalLight(0xffc9a8, 0.5); fill.position.set(-1.6, 0.6, 2.5); scene.add(fill);
+
+const skinMat = new THREE.MeshPhysicalMaterial({ color:0xd79f7e, roughness:0.52, sheen:0.5, sheenColor:0xff8f70, sheenRoughness:0.45, clearcoat:0.06, clearcoatRoughness:0.6 });
+const skinLite = new THREE.MeshStandardMaterial({ color:0xd79f7e, roughness:0.55 });
+const xrayMat = new THREE.MeshPhysicalMaterial({ color:0xd79f7e, roughness:0.5, transparent:true, opacity:0.26, depthWrite:false });
+const weightMat = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.6 });
+const envReady = new Promise(resolve => {
+  new RGBELoader().load('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/equirectangular/royal_esplanade_1k.hdr', tex => {
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    scene.environment = tex; scene.background = tex; scene.backgroundBlurriness = 0.42; scene.backgroundIntensity = 0.36;
+    hemi.intensity = 0.12; keyL.intensity = 2.1; rim.intensity = 0.6; fill.intensity = 0.1;
+    renderer.toneMappingExposure = 0.86; skinMat.envMapIntensity = 0.55; weightMat.envMapIntensity = 0.5; xrayMat.envMapIntensity = 0.4; xrayMat.opacity = 0.32;
+    resolve(true);
+  }, undefined, () => resolve(false));
 });
 
-// orb dragging (registered before OrbitControls so it can claim the pointer first)
-const el = renderer.domElement, ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), plane = new THREE.Plane();
-const setRay = e => { ndc.set(e.clientX/innerWidth*2-1, -(e.clientY/innerHeight)*2+1); ray.setFromCamera(ndc, camera); };
-el.addEventListener('pointerdown', e => {
-  if (mode !== 'reach') return;
-  setRay(e);
-  if (ray.intersectObject(orbHit).length) {
-    dragging = true; controls.enabled = false; el.setPointerCapture(e.pointerId); el.style.cursor = 'grabbing';
-    plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(tv).negate(), orb.position);
-  }
-}, true);
-el.addEventListener('pointermove', e => {
-  setRay(e);
-  if (dragging) { if (ray.ray.intersectPlane(plane, tv)) { if (tv.length() > 0.8) tv.setLength(0.8); tv.y = Math.max(tv.y, (tv.z > 0.26 ? TY : FLOOR) + 0.034); orbGoal.copy(tv); } }
-  else el.style.cursor = mode === 'reach' && ray.intersectObject(orbHit).length ? 'grab' : '';
-});
-const endDrag = () => { if (dragging) { dragging = false; controls.enabled = true; hold = 6; el.style.cursor = ''; } };
-el.addEventListener('pointerup', endDrag); el.addEventListener('pointercancel', endDrag);
+const skeleton = new THREE.Skeleton(bones);             // inverses are taken now, in the bind pose
+let geo = buildFigure(QUALITY[quality]);
+const figure = new THREE.SkinnedMesh(geo, skinMat);
+figure.add(pelvis); figure.bind(skeleton);
+figure.castShadow = figure.receiveShadow = true; figure.frustumCulled = false;
+scene.add(figure);
 
-const controls = new OrbitControls(camera, el);
-controls.target.set(0.15,-0.20,0.22); controls.enableDamping = true; controls.minDistance = 0.5; controls.maxDistance = 4; controls.maxPolarAngle = PI*0.62;
-if (camera.aspect < 1.1) camera.position.sub(controls.target).multiplyScalar(Math.min(2, 1.15/camera.aspect)).add(controls.target);  // back off in portrait windows
+// eyes: white spheres with a painted iris, parented to the head; the look-at solver turns them
+const eyeTex = (() => { const c = document.createElement('canvas'); c.width = 256; c.height = 128; const g = c.getContext('2d');
+  g.fillStyle = '#f4efe9'; g.fillRect(0, 0, 256, 128);
+  // a sphere's +Z direction maps to u = 0.25, v = 0.5: the iris is painted there
+  const rg = g.createRadialGradient(64, 64, 0, 64, 64, 22); rg.addColorStop(0, '#0b0806'); rg.addColorStop(0.36, '#0b0806'); rg.addColorStop(0.42, '#4d6b7c');
+  rg.addColorStop(0.9, '#2f4350'); rg.addColorStop(1, '#f4efe9'); g.fillStyle = rg; g.beginPath(); g.ellipse(64, 64, 22, 44, 0, 0, 6.283); g.fill();
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t; })();
+const eyeMat = new THREE.MeshPhysicalMaterial({ map:eyeTex, roughness:0.15, clearcoat:1 });
+const eyes = SIDES.map(s => {
+  const e = new THREE.Mesh(new THREE.SphereGeometry(0.0118, 24, 16), eyeMat);
+  const p = new V3().fromArray(mirrorX(J.eye, s)).sub(bw.get(head)); e.position.copy(p);
+  e.userData.rest = p.clone(); head.add(e); return e;
+});
+
+const FLOOR = 0;
+const floor = new THREE.Mesh(new THREE.CircleGeometry(9, 96), new THREE.MeshStandardMaterial({ color:0x4f4943, roughness:0.5 }));
+floor.rotation.x = -PI/2; floor.receiveShadow = true; scene.add(floor);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.92, 0); controls.enableDamping = true; controls.minDistance = 0.4; controls.maxDistance = 9;
 addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
-setMode('reach'); setView('skin');
+const VIEWS = {
+  front:[[0, 1.0, 3.6],[0, 0.9, 0]], side:[[3.6, 1.0, 0],[0, 0.9, 0]], threeq:[[2.4, 1.4, 2.7],[0, 0.9, 0]],
+  face:[[0.35, 1.68, 0.75],[0, 1.62, 0]], hand:[[1.0, 1.5, 0.7],[0.8, 1.42, 0]], feet:[[0.5, 0.35, 1.0],[0, 0.1, 0]],
+};
+function shotView(v) {
+  if (v.startsWith('mat:')) { figure.material = { skin:skinMat, xray:xrayMat, weights:weightMat }[v.slice(4)]; return; }
+  const c = VIEWS[v]; if (!c) return;
+  camera.position.fromArray(c[0]); controls.target.fromArray(c[1]); controls.update();
+}
 document.getElementById('loading')?.remove();
-const clock = new THREE.Clock(); let hudT = 0;
-let directing = false;
 function frame() {
-  if (directing) { requestAnimationFrame(frame); return; }
-  const dt = Math.min(clock.getDelta(), 0.05);
-  if (!paused) update(dt);
   controls.update();
   renderer.render(scene, camera);
-  if ((hudT += dt) > 0.1) {
-    hudT = 0;
-    $('h-elbow').textContent = (flex*DEG).toFixed(0)+'°';
-    $('h-twist').textContent = (twS.x*DEG).toFixed(0)+'°';
-    $('h-wflex').textContent = (wflexS.x*DEG).toFixed(0)+'°';
-    $('h-wdev').textContent = (wdevS.x*DEG).toFixed(0)+'°';
-  }
   requestAnimationFrame(frame);
 }
 frame();
-
-/* ───────────────────────── director: scripted two-panel showcase ─────────────────────────
-   Renders a fixed timeline frame by frame (so it is identical every run and never drops frames):
-   top panel = skin (or weights), bottom panel = x-ray with the skeleton, same camera in both. Each panel is 4:3.
-   One second of motion is one second of video: nothing is slowed down.
-   Each finished frame is posted to a local recorder, which writes the image files for encoding. */
-async function direct({ fps = 60, PW = 1080, PH = 810, every = 1, post = '/frame' } = {}) {
-  const SHOTS = [
-    { mode:'reach', dur:9.0, title:'Reach & grab', sub:'two-bone IK · contact-aware fingers', bottom:'xray',
-      cam:[[0.92,0.15,1.14],[0.19,-0.03,0.31],[0.44,0.24,1.24],[0.19,-0.03,0.31]],
-      orb:[[0.0,[0.30,-0.12,0.42]],[2.3,[0.04,0.14,0.36]],[3.9,[0.36,0.17,0.30]],[5.4,[0.10,-0.17,0.46]],[7.0,[0.27,0.05,0.43]]] },
-    { mode:'pick', dur:7.4, title:'Pick & place', sub:'fingers wrap joint by joint · table contact', bottom:'weights',
-      cam:[[0.88,0.02,1.14],[0.17,-0.23,0.45],[0.52,0.06,1.26],[0.17,-0.23,0.45]] },
-    { mode:'fist', dur:4.4, title:'Clench', sub:'thumb side · fingers roll shut, thumb lands a beat behind', bottom:'xray',
-      cam:[[0.52,-0.10,0.68],[0.10,-0.215,0.34],[0.44,-0.03,0.74],[0.10,-0.215,0.34]] },
-    { mode:'fist', dur:4.4, title:'Clench', sub:'other side · same motion from the little-finger side', bottom:'weights', keepTime:true, cut:true,
-      cam:[[-0.30,-0.10,0.66],[0.10,-0.215,0.34],[-0.22,-0.02,0.74],[0.10,-0.215,0.34]] },
-    { mode:'fist', dur:4.4, title:'Clench', sub:'forearm and biceps swell as the fist tightens', bottom:'xray', keepTime:true, cut:true,
-      cam:[[0.96,-0.02,0.66],[0.20,-0.15,0.17],[1.02,0.04,0.46],[0.20,-0.14,0.15]] },
-    { mode:'flow', dur:7.6, title:'Finger wave', sub:'a curl ripples through the fingers · 38 bones', bottom:'weights',
-      cam:[[0.60,-0.04,0.76],[0.21,-0.09,0.39],[0.31,0.03,0.85],[0.21,-0.09,0.39]] },
-  ];
-  await envReady;
-  directing = true; paused = true;
-  for (const el of document.querySelectorAll('.ui')) el.style.display = 'none';
-  const oldPR = renderer.getPixelRatio();
-  renderer.setPixelRatio(1); renderer.setSize(PW, PH*2, false); renderer.setScissorTest(true);
-  camera.aspect = PW/PH; camera.updateProjectionMatrix(); controls.enabled = false;
-  const out = document.createElement('canvas'); out.width = PW; out.height = PH*2;
-  const ctx = out.getContext('2d'), grad = ctx.createRadialGradient(PW*0.62, PH*0.64, 0, PW*0.62, PH*0.64, PW*1.1);
-  grad.addColorStop(0, '#1b1f28'); grad.addColorStop(1, '#0a0b0f');
-  const label = (txt, x, y, font, color, align = 'left') => { ctx.font = font; ctx.textAlign = align; ctx.fillStyle = color; ctx.fillText(txt, x, y); };
-  const pos = new V3(), tgt = new V3(), a = new V3(), b = new V3(), prevPos = new V3(), prevTgt = new V3();
-  const dt = 1/fps; let n = 0, sent = 0, first = true;
-  time = 0;
-  for (let si = 0; si < SHOTS.length; si++) {
-    const S = SHOTS[si], frames = Math.round(S.dur*fps);
-    if (!S.keepTime) { setMode(S.mode); time = 0; }
-    paused = true; hold = 1e9;
-    prevPos.copy(camera.position); prevTgt.copy(controls.target);
-    for (let k = 0; k < frames; k++, n++) {
-      const tl = k*dt;
-      if (S.orb) { hold = 1e9; for (const [t0, g] of S.orb) if (tl >= t0) orbGoal.fromArray(g); }
-      update(dt);
-      const u = smooth(0, 1, tl/S.dur);
-      pos.lerpVectors(a.fromArray(S.cam[0]), b.fromArray(S.cam[2]), u); tgt.lerpVectors(a.fromArray(S.cam[1]), b.fromArray(S.cam[3]), u);
-      if (!first && !S.cut) { const e = smooth(0, 1.1, tl); pos.lerpVectors(prevPos, pos, e); tgt.lerpVectors(prevTgt, tgt, e); }   // glide in from the previous shot
-      camera.position.copy(pos); camera.lookAt(tgt); controls.target.copy(tgt);
-      if (n % every) continue;
-      setView('skin'); renderer.setViewport(0, PH, PW, PH); renderer.setScissor(0, PH, PW, PH); renderer.render(scene, camera);
-      setView(S.bottom); renderer.setViewport(0, 0,  PW, PH); renderer.setScissor(0, 0,  PW, PH); renderer.render(scene, camera);
-      ctx.fillStyle = grad; ctx.fillRect(0, 0, PW, PH*2);
-      ctx.drawImage(renderer.domElement, 0, 0);
-      const shade = ctx.createLinearGradient(0, PH-170, 0, PH); shade.addColorStop(0, 'rgba(0,0,0,0)'); shade.addColorStop(1, 'rgba(0,0,0,0.55)');
-      ctx.fillStyle = shade; ctx.fillRect(0, PH-170, PW, 170);
-      ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.fillRect(0, PH-1, PW, 2);
-      const fade = Math.min(1, smooth(0.15, 0.7, tl), 1 - smooth(S.dur-0.45, S.dur-0.05, tl) * (SHOTS[si+1] && SHOTS[si+1].title === S.title ? 0 : 1));
-      const fadeIn = SHOTS[si-1] && SHOTS[si-1].title === S.title ? 1 : fade;
-      ctx.globalAlpha = Math.min(fade, fadeIn);
-      label(S.title, 40, PH-58, '600 34px "Segoe UI", system-ui, sans-serif', '#e9edf5');
-      ctx.globalAlpha = Math.min(1, smooth(0.15, 0.7, tl), 1 - smooth(S.dur-0.45, S.dur-0.05, tl));
-      label(S.sub, 40, PH-28, '400 19px "Segoe UI", system-ui, sans-serif', '#9aa3b6');
-      ctx.globalAlpha = 1;
-      const tag = (txt, y) => { ctx.font = '600 15px "Segoe UI", system-ui, sans-serif'; const w = ctx.measureText(txt).width; ctx.fillStyle = 'rgba(0,0,0,0.42)'; ctx.fillRect(PW-36-w-12, y-21, w+24, 30); };
-      tag('SKIN', 44); tag(S.bottom === 'weights' ? 'WEIGHTS' : 'SKELETON', PH+44);
-      label('SKIN', PW-36, 44, '600 15px "Segoe UI", system-ui, sans-serif', '#7fd4ff', 'right');
-      label(S.bottom === 'weights' ? 'WEIGHTS' : 'SKELETON', PW-36, PH+44, '600 15px "Segoe UI", system-ui, sans-serif', '#7fd4ff', 'right');
-      const blob = await new Promise(r => out.toBlob(r, 'image/jpeg', 0.94));
-      const res = await fetch(post + '?n=' + sent, { method:'POST', body: blob });
-      if (!res.ok) throw new Error('recorder refused frame ' + sent);
-      sent++;
-    }
-    first = false;
-  }
-  renderer.setScissorTest(false); renderer.setPixelRatio(oldPR); renderer.setSize(innerWidth, innerHeight);
-  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); controls.enabled = true;
-  for (const el of document.querySelectorAll('.ui')) el.style.display = '';
-  setView('skin'); directing = false; paused = false;
-  return { frames: sent, seconds: n/fps };
-}
-window.rig = { direct, envReady, dbg:{ get pushUp() { return pushUp; }, setRoll: v => thumbRoll = v, chain, hits, HS, FINGERS, resolveFinger, P, curlS, spreadS }, setMode, setView, bones, arm, camera, controls, setTime: t => time = t, step: (s) => { for (let i = 0; i < s*60; i++) update(1/60); }, pause: v => paused = v };
+window.rig = { ready:true, geo, figure, bones, arms, legs, shotView, scene, camera, controls, THREE };
 </script>
 </body>
 </html>
