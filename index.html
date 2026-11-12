@@ -609,9 +609,11 @@ function makeArm(side) {
   // snap every spring to its target (used when a pose must be applied at once, e.g. at start-up)
   function settle() { for (const s of [tgtS, poleS, palmS, shS]) for (const c of s.s) { c.x = c.t; c.v = 0; } }
   const toWorld = (v, out) => out.copy(v).applyMatrix4(st.M);
+  const palmWorld = out => out.copy(palmPoint).applyMatrix4(st.M);
+  const palmNormalWorld = out => out.set(0,-1,0).applyQuaternion(Qh).transformDirection(st.M);   // the way the palm faces
 
   const A = { side, bones, root, upper, half, fore, tw1, tw2, tw3, hand, ut0, ut1, B, FINGERS, armWeights, buildGeometry,
-    P, solve, settle, HS, st, toWorld, palmPoint, wrist:Wp, elbow:E, shoulderPt:S, Qh, springs:{ tgtS, twS, wflexS, wdevS, curlS }, get pushUp() { return pushUp; } };
+    P, solve, settle, HS, st, toWorld, palmWorld, palmNormalWorld, palmPoint, wrist:Wp, elbow:E, shoulderPt:S, Qh, springs:{ tgtS, twS, wflexS, wdevS, curlS }, get pushUp() { return pushUp; } };
   return A;
 }
 
@@ -1121,6 +1123,103 @@ function shotView(v) {
   const rel = (a, out) => out.copy(root.pos).addScaledVector(leftOf(root.yaw, _v1), a[0]).addScaledVector(fwdOf(root.yaw, _v2), a[2]).setY(a[1]);
   rel(c[0], camera.position); rel(c[1], controls.target); camFollow.copy(controls.target); controls.update();
 }
+/* ── props: a table, a chair, a ball and a target. They fade in where a movement needs them. ── */
+// procedural wood (from the original page): plank tone, long wavy grain streaks, seams between planks
+function woodTexture(seed, base, planks) {
+  const c = document.createElement('canvas'); c.width = 1024; c.height = 512; const g = c.getContext('2d');
+  let sd = seed; const rnd = () => (sd = (sd*16807) % 2147483647)/2147483647;
+  g.fillStyle = base; g.fillRect(0, 0, 1024, 512);
+  const ph = 512/planks;
+  for (let i = 0; i < planks; i++) { g.fillStyle = rnd() < 0.5 ? `rgba(40,18,6,${0.05+rnd()*0.10})` : `rgba(255,214,160,${0.03+rnd()*0.07})`; g.fillRect(0, i*ph, 1024, ph); }
+  for (let i = 0; i < 1100; i++) {
+    const y = rnd()*512, al = 0.03+rnd()*0.10, f = 0.003+rnd()*0.007, amp = 2+rnd()*8, p0 = rnd()*6.28;
+    g.strokeStyle = rnd() < 0.72 ? `rgba(58,28,10,${al})` : `rgba(255,224,176,${al*0.7})`; g.lineWidth = 0.5+rnd()*1.8;
+    g.beginPath();
+    for (let x = 0; x <= 1024; x += 16) { const yy = y + Math.sin(x*f+p0)*amp + Math.sin(x*f*3.1+p0*2)*amp*0.25; if (x) g.lineTo(x, yy); else g.moveTo(x, yy); }
+    g.stroke();
+  }
+  for (let k = 0; k < 5; k++) {                                   // a few knots
+    const kx = rnd()*1024, ky = rnd()*512, kr = 5+rnd()*9, rg = g.createRadialGradient(kx, ky, 0, kx, ky, kr*2.2);
+    rg.addColorStop(0, 'rgba(38,18,8,0.65)'); rg.addColorStop(0.45, 'rgba(60,30,12,0.28)'); rg.addColorStop(1, 'rgba(60,30,12,0)');
+    g.fillStyle = rg; g.beginPath(); g.ellipse(kx, ky, kr*2.6, kr*1.3, 0, 0, 6.283); g.fill();
+  }
+  g.fillStyle = 'rgba(26,12,5,0.6)'; for (let i = 1; i < planks; i++) g.fillRect(0, i*ph-1, 1024, 2);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+const props = {};
+{
+  const topTex = woodTexture(11, '#9a6a44', 5), legTex = woodTexture(29, '#6e472c', 1);
+  const bump = topTex.clone(); bump.colorSpace = THREE.NoColorSpace; bump.needsUpdate = true;
+  const wood = new THREE.MeshPhysicalMaterial({ map: topTex, bumpMap: bump, bumpScale: 1.2, roughness: 0.46, clearcoat: 0.3, clearcoatRoughness: 0.35, transparent:true });
+  const dark = new THREE.MeshPhysicalMaterial({ map: legTex, roughness: 0.55, clearcoat: 0.15, clearcoatRoughness: 0.5, transparent:true });
+  const box = (g, w, h, d, x, y, z, mat, r = 0.006) => { const m = new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 3, r), mat); m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; g.add(m); return m; };
+  const taperLeg = (g, h, x, z, top) => {             // square legs that taper toward the floor
+    const leg = box(g, 0.042, h, 0.042, x, h/2, z, dark, 0.005), pa = leg.geometry.attributes.position;
+    for (let i = 0; i < pa.count; i++) { const k = 0.62 + 0.38*(pa.getY(i)/h + 0.5); pa.setX(i, pa.getX(i)*k); pa.setZ(i, pa.getZ(i)*k); }
+    leg.geometry.computeVertexNormals();
+  };
+  // table: top at 0.74 m (local frame: +z away from the figure)
+  const T = new THREE.Group(), TY = 0.74, TW = 0.92, TD = 0.50, TT = 0.03;
+  box(T, TW, TT, TD, 0, TY - TT/2, 0, wood, 0.007);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) taperLeg(T, TY - TT, sx*(TW/2 - 0.05), sz*(TD/2 - 0.05));
+  for (const sz of [-1, 1]) box(T, TW - 0.14, 0.06, 0.018, 0, TY - TT - 0.035, sz*(TD/2 - 0.05), dark, 0.003);
+  for (const sx of [-1, 1]) box(T, 0.018, 0.06, TD - 0.14, sx*(TW/2 - 0.05), TY - TT - 0.035, 0, dark, 0.003);
+  props.table = { obj:T, mats:[wood, dark], top:TY, w:TW, d:TD };
+  // chair: seat top at 0.46 m, back rest behind (local +z = toward the figure's front)
+  const C = new THREE.Group(), SY = 0.46, SW = 0.46, SD = 0.42;
+  box(C, SW, 0.03, SD, 0, SY - 0.015, 0, wood, 0.007);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) taperLeg(C, SY - 0.03, sx*(SW/2 - 0.04), sz*(SD/2 - 0.04));
+  for (const sx of [-1, 1]) box(C, 0.032, 0.50, 0.032, sx*(SW/2 - 0.04), SY + 0.25, -SD/2 + 0.03, dark, 0.004);
+  box(C, SW - 0.04, 0.12, 0.022, 0, SY + 0.42, -SD/2 + 0.03, wood, 0.006);
+  props.chair = { obj:C, mats:[wood.clone(), dark.clone()], seat:SY, depth:SD };
+  C.traverse(o => { if (o.isMesh) o.material = o.material === wood ? props.chair.mats[0] : props.chair.mats[1]; });
+  // ball (picked up and carried) and target (reached for, pointed at, looked at)
+  const glow = (c, e) => new THREE.MeshPhysicalMaterial({ color:c, emissive:e, emissiveIntensity:0.7, roughness:0.15, clearcoat:1, transparent:true });
+  props.ball = { obj:new THREE.Mesh(new THREE.SphereGeometry(ORB_R, 40, 28), glow(0xffb45f, 0x7a3a08)) };
+  props.ball.mats = [props.ball.obj.material]; props.ball.obj.castShadow = true;
+  props.target = { obj:new THREE.Mesh(new THREE.SphereGeometry(ORB_R, 40, 28), glow(0x5fc8ff, 0x1b6fa8)) };
+  props.target.mats = [props.target.obj.material]; props.target.obj.castShadow = true;
+  props.target.hit = new THREE.Mesh(new THREE.SphereGeometry(0.09, 12, 8), new THREE.MeshBasicMaterial({ visible:false }));
+  props.target.obj.add(props.target.hit);
+  for (const k in props) { const P = props[k]; P.vis = 0; P.want = 0; P.obj.visible = false; scene.add(P.obj); }
+}
+// place a prop in the root's ground frame: x to the figure's left, z forward, facing back toward the figure
+function placeProp(P, x, z, yawOff = 0) {
+  groundPt(x, 0, z, P.obj.position); P.obj.rotation.set(0, root.yaw + yawOff, 0);
+  P.frame = { pos:P.obj.position.clone(), yaw:root.yaw + yawOff };
+}
+function updateProps(dt) {
+  for (const k in props) {
+    const P = props[k];
+    P.vis += clamp(P.want - P.vis, -dt*2.5, dt*2.5);
+    P.obj.visible = P.vis > 0.003;
+    for (const m of P.mats) { m.opacity = P.vis; m.depthWrite = P.vis > 0.98; }
+  }
+}
+// the ball: carried by a hand, or free under gravity, bouncing to rest on the table top or the floor
+const ball = { pos:new V3(0, 0.773, 0.4), vel:new V3(), held:-1, off:new V3() };
+function updateBall(dt) {
+  if (ball.held >= 0) {
+    // it keeps whatever small offset it had at the moment of pickup and eases that out, rather than snapping
+    // into the palm (a snap shoves it into the fingers and makes them flinch)
+    ball.off.multiplyScalar(Math.exp(-dt*4));
+    arms[ball.held].palmWorld(ball.pos).add(ball.off); ball.vel.set(0,0,0);
+  } else {
+    ball.vel.y -= 9.81*dt; ball.pos.addScaledVector(ball.vel, dt);
+    let floorY = ORB_R;
+    const T = props.table;
+    if ((T.want > 0.5 || T.vis > 0.5) && T.frame) {
+      const d = _v1.copy(ball.pos).sub(T.frame.pos), lx = d.x*Math.cos(T.frame.yaw) - d.z*Math.sin(T.frame.yaw), lz = d.x*Math.sin(T.frame.yaw) + d.z*Math.cos(T.frame.yaw);
+      if (Math.abs(lx) < T.w/2 && Math.abs(lz) < T.d/2 && ball.pos.y > T.top - 0.02) floorY = T.top + ORB_R;
+    }
+    if (ball.pos.y < floorY) { ball.pos.y = floorY; ball.vel.y = Math.abs(ball.vel.y) > 0.4 ? -ball.vel.y*0.45 : 0; ball.vel.x *= 0.8; ball.vel.z *= 0.8; }
+  }
+  props.ball.obj.position.copy(ball.pos);
+}
+const grab = (i) => { ball.held = i; ball.off.copy(ball.pos).sub(arms[i].palmWorld(_v1)); };
+const release = () => { if (ball.held >= 0) { ball.held = -1; ball.vel.set(0, 0, 0); } };
+
 /* ── body pose application (filled by the solvers each frame) ── */
 const armX = arms.map(() => ({ M:new M4(), rootBase:new M4(), morph:null }));
 const body = {
@@ -1528,14 +1627,37 @@ MOVES.walk = {
     hangArms(w, t, [-sw*Math.cos(ph) + 0.05*k, sw*Math.cos(ph) + 0.05*k], 0.3);
   },
 };
-const marker = { pos:new V3(0, 1.45, 2.2), angle:0 };
+// the target: it drifts between goals (or sits where the user dragged it)
+const marker = { pos:new V3(0, 1.45, 2.2), goal:new V3(0, 1.45, 2.2), dragging:false, hold:0 };
+function driveMarker(dt, k = 4) { marker.pos.lerp(marker.goal, 1 - Math.exp(-dt*k)); }
+const viewer = () => camera.position.clone();
+// how far a hand target lies beyond comfortable reach from the (upright) shoulder: used to bend at the hips and knees
+function reachLean(i, p) {
+  const sh = groundPt(SIDES[i]*0.178, 1.425, 0, new V3()), d = p.distanceTo(sh), low = smooth(1.15, 0.55, p.y);
+  return { pitch:clamp((d - 0.50)*2.0, 0, 0.75)*smooth(1.5, 1.0, p.y) + 0.35*low, knee:-0.30*low, yaw:0 };
+}
+// turn the chest toward a point (fraction of the horizontal angle, limited)
+function chestToward(w, p, k = 0.5, lim = 0.5) {
+  const a = angDiff(Math.atan2(p.x - root.pos.x, p.z - root.pos.z), root.yaw);
+  w.spine.yaw = clamp(a*k, -lim, lim); return a;
+}
+// which hand: the one on the target's side, with hysteresis so it does not flip back and forth
+function handFor(p, cur) {
+  const lx = (p.x - root.pos.x)*Math.cos(root.yaw) - (p.z - root.pos.z)*Math.sin(root.yaw);
+  return lx > 0.12 ? 0 : lx < -0.12 ? 1 : cur;
+}
+
 MOVES.turn = {
   label:'Turn', hint:'Turns in place to face the moving target: eyes first, then head, chest, and finally the feet step round.',
-  enter() { this.a0 = root.yaw; },
-  update(t, w) {
-    // the target circles the figure; it pauses now and then so the body can catch up
-    const a = this.a0 + 2.2*Math.sin(t*0.42) + 0.9*Math.sin(t*0.19);
-    marker.pos.set(root.pos.x + 2.4*Math.sin(a), 1.3 + 0.25*Math.sin(t*0.7), root.pos.z + 2.4*Math.cos(a));
+  props:['target'],
+  enter() { this.a0 = root.yaw; this.c = root.pos.clone(); },
+  update(t, w, dt) {
+    // the target circles the figure, pausing now and then so the body can catch up (or follows the user's drag)
+    if (!marker.dragging && marker.hold <= 0) {
+      const a = this.a0 + 2.2*Math.sin(t*0.42) + 0.9*Math.sin(t*0.19);
+      marker.goal.set(this.c.x + 2.2*Math.sin(a), 1.3 + 0.25*Math.sin(t*0.7), this.c.z + 2.2*Math.cos(a));
+    }
+    driveMarker(dt, 6);
     w.look = marker.pos.clone();
     const want = Math.atan2(marker.pos.x - root.pos.x, marker.pos.z - root.pos.z), off = angDiff(want, root.yaw);
     // the trunk twists toward it first; the heading only follows once it is well off to the side
@@ -1545,21 +1667,202 @@ MOVES.turn = {
   },
 };
 
+MOVES.wave = {
+  label:'Wave', hint:'Raises the right hand and waves from the elbow at you; the wrist and fingers trail behind.',
+  update(t, w) {
+    hangArms(w, t);
+    const i = 1, a = w.arms[i], up = smooth(0.0, 0.9, t), wv = 6.4, amp = 0.12*smooth(0.6, 1.3, t);
+    armPt(i, lerp(0.09, 0.27 + amp*Math.sin(t*wv), up), lerp(-0.548, 0.20 + 0.014*Math.cos(t*wv*2), up), lerp(0.035, 0.11, up), a.tgt);
+    armDir(i, 0.6, -1, -0.3, a.pole); armDir(i, lerp(-1, 0, up), 0.1, lerp(0.15, 1, up), a.palm);
+    HAND.open(a, up); a.tgtW = 11; a.wflex = 0.12*up; a.wdev = -0.16*Math.cos(t*wv)*up*smooth(0.6, 1.3, t); a.tense = 0.1;
+    w.look = viewer(); w.bias = 0.35*up; w.spine.roll = -0.05*up; w.spine.pitch = -0.02;
+  },
+};
+
+MOVES.point = {
+  label:'Point', hint:'Points at the target with the nearer hand; the chest turns toward it and the eyes follow. Drag the target.',
+  props:['target'],
+  enter() { this.side = 1; this.c = { pos:root.pos.clone(), yaw:root.yaw }; },
+  update(t, w, dt) {
+    if (!marker.dragging && marker.hold <= 0) groundPt(1.3*Math.sin(t*0.29), 1.3 + 0.45*Math.sin(t*0.47 + 1), 2.2 + 0.5*Math.sin(t*0.21), marker.goal, this.c);
+    driveMarker(dt, 3);
+    hangArms(w, t);
+    const T = marker.pos, i = this.side = handFor(T, this.side), a = w.arms[i], k = smooth(0.1, 0.9, t);
+    const sh = armPt(i, 0, 0, 0, new V3()), dir = new V3().subVectors(T, sh).normalize();
+    a.tgt.lerp(_v3.copy(sh).addScaledVector(dir, 0.535), k);
+    a.pole.set(0, -1, 0).addScaledVector(leftOf(root.yaw, _v1), SIDES[i]*0.6);
+    a.palm.set(0, -1, 0).addScaledVector(leftOf(root.yaw, _v1), -SIDES[i]*0.4).normalize();
+    HAND.point(a, k); a.tgtW = 8; a.wflex = 0; a.wdev = 0; a.tense = 0.3*k;
+    w.look = T.clone(); chestToward(w, T, 0.35, 0.45); w.bias = (i === 0 ? 0.3 : -0.3)*k;
+  },
+};
+
+MOVES.reach = {
+  label:'Reach', hint:'Reaches for the target with the nearer hand, bending at the hips when it is far. Drag the target.',
+  props:['target'],
+  enter() { this.side = 1; this.hold = 0.3; this.c = { pos:root.pos.clone(), yaw:root.yaw }; this.grip = 0; },
+  update(t, w, dt) {
+    if (!marker.dragging) { this.hold -= dt; if (this.hold <= 0 && marker.hold <= 0) {
+      { const y = 0.9 + Math.random()*0.85, x = (-0.45 + Math.random()*0.9)*(0.6 + 0.4*smooth(0.9, 1.3, y));
+        groundPt(x, y, 0.42 + Math.random()*0.22 + 0.18*smooth(1.15, 0.9, y), marker.goal, this.c); } this.hold = 3.3 + Math.random()*1.3; } }
+    driveMarker(dt, 3.5);
+    hangArms(w, t);
+    const T = marker.pos, i = this.side = handFor(T, this.side), a = w.arms[i], A = arms[i];
+    // Going straight at the target would drive the fingers into it. Instead the palm first lines up over it
+    // (the target sits along the direction the palm faces), and only then closes the remaining gap along that direction.
+    const nOut = A.palmNormalWorld(new V3()), pw = A.palmWorld(new V3()), off = new V3().subVectors(T, pw);
+    const along = off.dot(nOut), side = Math.sqrt(Math.max(0, off.lengthSq() - along*along));
+    a.tgt.copy(T).addScaledVector(nOut, -clamp(side*1.6, 0, 0.10)); a.palmAt = true; a.tgtW = 6.5;
+    const up = smooth(-0.05, 0.25, T.y - armPt(i, 0, 0, 0, _v3).y + 0.31);
+    armDir(i, -0.3, lerp(-1, -0.25, up), lerp(0.1, 1, up), a.palm); armDir(i, 0.55, -1, -0.35, a.pole);
+    this.grip = 1 - smooth(0.012, 0.05, pw.distanceTo(T));                  // close only once the target is in the palm
+    HAND.grip(a, this.grip); a.wflex = lerp(0.28, 0.05, this.grip); a.tense = this.grip*0.6; a.orb = T;
+    const L = reachLean(i, T); w.spine.pitch = L.pitch; w.pelvis.h = L.knee; chestToward(w, T, 0.3, 0.4);
+    w.look = T.clone(); w.bias = i === 0 ? 0.25 : -0.25;
+    props.target.mats[0].emissiveIntensity = 0.55 + 1.1*this.grip;
+  },
+};
+
+MOVES.pick = {
+  label:'Pick up', hint:'Picks the ball off the table, carries it and sets it down; the hands take turns. Fingers wrap it joint by joint.',
+  props:['table', 'ball'], CYCLE:9.2,
+  enter() {
+    placeProp(props.table, 0, 0.60);
+    const y = props.table.top + ORB_R;
+    this.spots = { R:groundPt(-0.15, y, 0.43, new V3()), C:groundPt(0.0, y, 0.47, new V3()), L:groundPt(0.15, y, 0.43, new V3()) };
+    this.seq = [['R', 'C', 1], ['C', 'L', 0], ['L', 'C', 0], ['C', 'R', 1]];        // from, to, hand
+    release(); ball.pos.copy(this.spots.R); ball.vel.set(0, 0, 0); this.cyc = -1;
+  },
+  leave() { release(); return 0; },
+  exit() { release(); },
+  update(t, w) {
+    const C = this.CYCLE, n = Math.floor(t/C), p = t - n*C, [fk, tk, i] = this.seq[n % 4], from = this.spots[fk], to = this.spots[tk];
+    if (n !== this.cyc) { this.cyc = n; if (ball.held < 0 && ball.pos.distanceTo(from) > 0.06) { ball.pos.copy(from); ball.vel.set(0,0,0); } }
+    hangArms(w, t);
+    const a = w.arms[i], hover = 0.10, carry = groundPt(SIDES[i]*0.12, 1.06, 0.30, new V3()), goal = new V3(), up = new V3(0, 1, 0);
+    let g = 0, on = 1;
+    if (p < 1.1)      { goal.copy(from).addScaledVector(up, hover); on = smooth(0, 0.9, p); }
+    else if (p < 1.8) { goal.copy(from).addScaledVector(up, hover*(1 - smooth(1.1, 1.7, p))); }
+    else if (p < 2.3) { goal.copy(from); g = smooth(1.8, 2.25, p); }
+    else if (p < 3.6) { const k = smooth(2.3, 3.5, p); goal.lerpVectors(from, carry, k).addScaledVector(up, 0.08*Math.sin(k*PI)); g = 1; }
+    else if (p < 5.0) { goal.copy(carry).addScaledVector(up, 0.012*Math.sin((p - 3.6)*3)); g = 1; }
+    else if (p < 6.0) { const k = smooth(5.0, 5.9, p); goal.lerpVectors(carry, _v3.copy(to).addScaledVector(up, hover), k); g = 1; }
+    else if (p < 6.6) { goal.copy(to).addScaledVector(up, hover*(1 - smooth(6.0, 6.5, p))); g = 1; }
+    else if (p < 7.1) { goal.copy(to); g = 1 - smooth(6.6, 7.0, p); }
+    else              { goal.copy(to).addScaledVector(up, hover*smooth(7.1, 7.6, p)); on = 1 - smooth(7.5, 8.4, p); }
+    if (p >= 2.15 && p < 6.8) { if (ball.held !== i) grab(i); } else if (ball.held === i) release();
+    // blend from the hanging hand into the task (and back out at the end of the cycle)
+    a.tgt.lerp(goal, on); a.palmAt = on > 0.5; a.tgtW = 7;
+    a.palm.lerp(_v1.set(0, -1, 0).addScaledVector(fwdOf(root.yaw, _v2), 0.05), on); armDir(i, 0.7, -0.8, -0.3, _v1); a.pole.lerp(_v1, on);
+    if (on > 0.02) { HAND.grip(_tmpHand, g); for (let f = 0; f < 5; f++) { for (let j = 0; j < 3; j++) a.curl[f][j] = lerp(a.curl[f][j], _tmpHand.curl[f][j], on); a.spread[f] = lerp(a.spread[f], _tmpHand.spread[f], on); } a.roll = lerp(a.roll, _tmpHand.roll, on); }
+    a.wflex = lerp(a.wflex, lerp(0.25, 0.08, g), on); a.tense = g*0.6;
+    const overTable = (p > 0.6 && p < 2.6) || (p > 5.4 && p < 7.9);
+    a.surfY = overTable ? props.table.top : null; a.orb = ball.pos;
+    const L = reachLean(i, goal); w.spine.pitch = L.pitch*on; w.pelvis.h = L.knee*on; chestToward(w, goal, 0.25*on, 0.35);
+    w.look = (p > 4.6 && p < 6.4 ? to : ball.pos).clone(); w.bias = (i === 0 ? 0.25 : -0.25)*on;
+  },
+};
+const _tmpHand = armWish();
+
+MOVES.sit = {
+  label:'Sit', hint:'Sits down on the chair and stands back up: hips back, chest forward over the feet, then down.',
+  props:['chair'], CYCLE:10,
+  enter() { placeProp(props.chair, 0, -0.34); },
+  leave(L) {                                   // never leave while sitting: stand up first, then hand over
+    const C = this.CYCLE, p = L.t % C, base = L.t - p;
+    if (p > 0.45 && p < 5.5) { L.t = base + 5.5; return 1.9/ui.speed; }
+    if (p >= 5.5 && p < 7.4) return (7.4 - p)/ui.speed;
+    return 0;
+  },
+  update(t, w) {
+    const p = t % this.CYCLE, u = clamp((p - 0.5)/1.8, 0, 1), v = clamp((p - 5.5)/1.9, 0, 1);
+    // seat progress: hips travel back before they drop when sitting; on the way up the chest leads, hips follow
+    let z, h, lean, tilt;
+    if (p < 5.5) { z = -0.33*smooth(0, 0.75, u); h = -0.355*smooth(0.15, 1, u); lean = 0.50*Math.sin(PI*Math.min(1, u*0.9)); tilt = 0.30*Math.sin(PI*u) - 0.06*smooth(0.8, 1, u); }
+    else         { z = -0.33*(1 - smooth(0.25, 1, v)); h = -0.355*(1 - smooth(0.22, 0.95, v)); lean = 0.62*Math.sin(PI*Math.min(1, v*1.12)); tilt = 0.32*Math.sin(PI*v) - 0.10*(1 - smooth(0, 0.3, v)); }
+    const seat = clamp(-h/0.355, 0, 1);
+    w.pelvis.z = z; w.pelvis.h = h; w.pelvis.pitch = tilt; w.spine.pitch = lean - 0.06*seat;
+    w.balance = 1 - smooth(0.55, 0.9, seat); w.seated = seat; w.plantLock = p > 0.3 && p < 7.6;
+    w.stance.width = 0.12; w.stance.toeOut = 0.16;
+    hangArms(w, t);
+    for (let i = 0; i < 2; i++) {                // hands forward while lowering, then resting on the thighs
+      const a = w.arms[i], fwdArm = Math.sin(PI*(p < 5.5 ? u : v))*0.8;
+      if (fwdArm > 0.01) { armPt(i, 0.07, -0.42, 0.28, _v1); a.tgt.lerp(_v1, fwdArm); }
+      if (seat > 0.01) {
+        groundPt(SIDES[i]*0.11, 0.665, -0.05, _v1); a.tgt.lerp(_v1, seat); a.palmAt = seat > 0.5;
+        a.palm.lerp(_v2.set(0, -1, 0), seat); armDir(i, 0.5, 0.2, -1, _v3); a.pole.lerp(_v3, seat);
+      }
+    }
+    w.look = groundPt(0.3*noise(t*0.15, 4), 1.35 - 0.35*Math.sin(PI*(p < 5.5 ? u : v)), 2.5, new V3());
+  },
+};
+
+MOVES.squat = {
+  label:'Squat', hint:'A deep squat: feet turn out, knees track over the toes, hips sit back and the arms come forward to balance.',
+  CYCLE:6.4,
+  leave(L) {
+    const p = (L.t - 1) % this.CYCLE;
+    if (L.t > 1 && p > 0.2 && p < 3.0) { L.t = L.t - p + 3.0; return 1.6/ui.speed; }
+    if (L.t > 1 && p >= 3.0 && p < 4.6) return (4.6 - p)/ui.speed;
+    return 0;
+  },
+  update(t, w) {
+    // the first second only widens the stance (the feet step out); then the cycle runs
+    const p = t < 1 ? -1 : (t - 1) % this.CYCLE;
+    const d = p < 0 ? 0 : p < 1.8 ? minJerk(smooth(0.2, 1.8, p)) : p < 3.0 ? 1 : 1 - minJerk(smooth(3.0, 4.6, p));
+    w.stance.width = 0.15; w.stance.toeOut = 0.32; w.plantLock = d > 0.02;
+    w.pelvis.h = -0.47*d; w.pelvis.z = -0.05*d; w.pelvis.pitch = 0.30*d; w.spine.pitch = 0.40*d; w.balance = 1;
+    hangArms(w, t);
+    for (let i = 0; i < 2; i++) { const a = w.arms[i]; armPt(i, 0.03, -0.05, 0.52, _v1); a.tgt.lerp(_v1, smooth(0.05, 0.7, d)); armDir(i, 0.5, -1, 0, _v2); a.pole.lerp(_v2, d); a.palm.lerp(_v2.set(0, -1, 0), d); }
+    w.look = groundPt(0, 1.0 + 0.4*(1 - d), 3, new V3());
+  },
+};
+
+MOVES.stretch = {
+  label:'Stretch', hint:'Arms overhead, up onto the toes, a side bend each way, then back down.',
+  CYCLE:9.5,
+  update(t, w) {
+    const p = t % this.CYCLE;
+    const up = smooth(0.2, 1.6, p)*(1 - smooth(7.4, 8.8, p)), toes = smooth(1.6, 2.4, p)*(1 - smooth(6.3, 7.1, p));
+    const roll = 0.26*(smooth(2.6, 3.5, p) - 2*smooth(3.8, 4.9, p) + smooth(5.2, 6.1, p));
+    hangArms(w, t);
+    for (let i = 0; i < 2; i++) {
+      const a = w.arms[i];
+      armPt(i, 0.05, 0.555, 0.07, _v1); a.tgt.lerp(_v1, up);
+      armDir(i, 0.8, 0.3, -0.5, _v1); a.pole.lerp(_v1, up); armDir(i, -1, 0, 0.35, _v1); a.palm.lerp(_v1, up);
+      HAND.open(_tmpHand, 1); for (let f = 0; f < 5; f++) { for (let j = 0; j < 3; j++) a.curl[f][j] = lerp(a.curl[f][j], _tmpHand.curl[f][j], up); a.spread[f] = lerp(a.spread[f], _tmpHand.spread[f], up); }
+      a.wflex = lerp(a.wflex, -0.25, up); a.tense = 0.4*up;
+    }
+    w.heel = [0.38*toes, 0.38*toes]; w.pelvis.h = 0.05*toes; w.spine.pitch = -0.08*up; w.spine.roll = roll*up;
+    w.look = groundPt(0, lerp(1.55, 2.6, up*0.8), 2.2, new V3());
+  },
+};
+
 const MV = {
-  layers:[],                     // [{ m, w (fade 0..1), t (movement time), wish }]
+  layers:[], pending:null,         // layers: [{ m, key, w (fade 0..1), t (movement time), wish }]
   out:newWish(), TRANS:0.9,
   set(key) {
-    const m = MOVES[key]; if (!m) return;
-    if (this.layers.length && this.layers[this.layers.length-1].m === m) return;
+    if (!MOVES[key]) return;
+    const top = this.layers[this.layers.length-1];
+    if (top && top.key === key && !this.pending) return;
+    // a movement that is mid-way (seated, squatting) first finishes; the new one blends in after
+    if (top && top.m.leave && !this.pending) { const d = top.m.leave(top); if (d > 0) { this.pending = { key, t:d }; this.current = key; return; } }
+    if (this.pending) { this.pending.key = key; this.current = key; return; }
+    this.push(key);
+  },
+  push(key) {
+    const m = MOVES[key];
+    for (const k in props) props[k].want = (m.props || []).includes(k) ? 1 : 0;
     m.enter && m.enter();
     this.layers.push({ m, key, w:this.layers.length ? 0 : 1, t:0, wish:newWish() });
     this.current = key;
   },
   update(dt) {
+    if (this.pending && (this.pending.t -= dt) <= 0) { const k = this.pending.key; this.pending = null; this.push(k); }
     const tempo = ui.speed;
     for (const L of this.layers) {
       L.t += dt*(L.m === MOVES.walk ? 1 : tempo);
-      const fresh = newWish(); Object.assign(L.wish, fresh); L.m.update(L.t, L.wish, dt*tempo, L);
+      Object.assign(L.wish, newWish()); L.m.update(L.t, L.wish, dt*(L.m === MOVES.walk ? 1 : tempo), L);
     }
     const top = this.layers[this.layers.length-1];
     if (top.w < 1) top.w = Math.min(1, top.w + dt/(top.m.trans || this.TRANS));
@@ -1583,6 +1886,10 @@ function update(dt) {
     for (let f = 0; f < 5; f++) { for (let j = 0; j < 3; j++) P.curl[f][j] = a.curl[f][j]; P.spread[f] = a.spread[f]; }
   }
   solveBody(dt, w);
+  updateBall(dt);
+  updateProps(dt);
+  marker.hold = Math.max(0, marker.hold - dt);
+  props.target.obj.position.copy(marker.pos);
 }
 // start-up: stand the figure in place and let every spring settle before the first frame is shown
 function settleAll(seconds = 1.5) {
@@ -1615,7 +1922,7 @@ function frame() {
 }
 frame();
 window.rig = { ready:true, geo, figure, bones, arms, legs, shotView, scene, camera, controls, THREE, testPose, body, applyBody,
-  MV, MOVES, ui, root, feet, gait, com, supportPts, update, followCamera, legState, pause: v => paused = v,
+  MV, MOVES, ui, root, feet, gait, com, supportPts, update, followCamera, legState, ball, props, marker, pause: v => paused = v,
   step: (sec, cb) => { const n = Math.round(sec*60); for (let i = 0; i < n; i++) { update(1/60); cb && cb(i); } } };
 </script>
 </body>
