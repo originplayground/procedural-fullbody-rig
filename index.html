@@ -5,15 +5,69 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Procedural Figure · three.js</title>
 <style>
-  :root { --ink:#f2f4f9; --dim:#aeb5c6; --glass:rgba(13,15,21,.58); --line:rgba(255,255,255,.13); }
+  :root { --ink:#f2f4f9; --dim:#aeb5c6; --glass:rgba(13,15,21,.58); --line:rgba(255,255,255,.13); --accent:#7fd4ff; }
   * { box-sizing:border-box; }
-  html,body { margin:0; height:100%; overflow:hidden; color:var(--ink);
+  html,body { margin:0; height:100%; overflow:hidden; color:var(--ink); overscroll-behavior:none;
     background:radial-gradient(120% 95% at 62% 32%, #1b1f28 0%, #0a0b0f 100%);
     font:13px/1.45 ui-sans-serif,system-ui,"Segoe UI",Roboto,sans-serif; -webkit-font-smoothing:antialiased; }
   canvas { position:fixed; inset:0; display:block; touch-action:none; }
   .glass { background:var(--glass); border:1px solid var(--line); backdrop-filter:blur(18px) saturate(1.3); -webkit-backdrop-filter:blur(18px) saturate(1.3);
     box-shadow:0 8px 30px rgba(0,0,0,.28); }
-  #loading { position:fixed; inset:0; display:grid; place-items:center; color:var(--dim); font-size:14px; letter-spacing:.02em; z-index:5; }
+  button { font:inherit; }
+  /* segmented movement picker */
+  .seg { display:flex; gap:2px; padding:4px; border-radius:999px; }
+  .seg button { all:unset; cursor:pointer; min-height:36px; padding:0 15px; display:flex; align-items:center; border-radius:999px; color:var(--dim);
+    font-size:13.5px; font-weight:500; white-space:nowrap; transition:background .18s, color .18s; -webkit-tap-highlight-color:transparent; }
+  .seg button:hover { color:var(--ink); }
+  .seg button.on { background:rgba(255,255,255,.95); color:#0d0f14; font-weight:600; }
+  .seg button.pending { box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.7); color:var(--ink); }
+  .seg button:focus-visible, .tool:focus-visible { outline:2px solid #fff; outline-offset:2px; }
+
+  #top { position:fixed; top:14px; left:16px; right:16px; display:flex; justify-content:space-between; align-items:flex-start; gap:12px; pointer-events:none; }
+  #top > * { pointer-events:auto; }
+  #brand { font-size:15px; font-weight:650; letter-spacing:.01em; text-shadow:0 1px 10px rgba(0,0,0,.55); pointer-events:none; }
+  #brand span { display:block; font-size:12px; font-weight:400; color:rgba(255,255,255,.72); }
+  #tools { display:flex; gap:6px; padding:4px; border-radius:16px; }
+  .tool { all:unset; cursor:pointer; min-width:44px; height:40px; padding:0 12px; border-radius:12px; display:flex; align-items:center; justify-content:center; gap:6px;
+    color:var(--dim); font-size:13px; font-weight:550; -webkit-tap-highlight-color:transparent; transition:background .18s, color .18s; }
+  .tool:hover { color:var(--ink); background:rgba(255,255,255,.08); }
+  .tool.on { color:#0d0f14; background:var(--accent); }
+  .tool svg { width:18px; height:18px; flex:none; }
+
+  #dock { position:fixed; left:0; right:0; bottom:16px; padding:0 12px; display:flex; flex-direction:column; align-items:center; gap:10px; pointer-events:none; }
+  #hint { margin:0; max-width:560px; text-align:center; font-size:12.5px; color:rgba(255,255,255,.88); text-shadow:0 1px 8px rgba(0,0,0,.7); min-height:2.9em;
+    display:flex; align-items:flex-end; justify-content:center; }
+  #moves { pointer-events:auto; max-width:100%; overflow-x:auto; scrollbar-width:none; }
+  #moves::-webkit-scrollbar { display:none; }
+  #speedRow { pointer-events:auto; display:flex; align-items:center; gap:12px; padding:6px 16px; border-radius:999px; }
+  #speedRow label { color:var(--dim); font-size:12.5px; }
+  #speedVal { min-width:40px; font-variant-numeric:tabular-nums; text-align:right; font-size:12.5px; }
+  input[type=range] { -webkit-appearance:none; appearance:none; width:200px; height:28px; background:transparent; margin:0; }
+  input[type=range]::-webkit-slider-runnable-track { height:4px; border-radius:2px; background:rgba(255,255,255,.25); }
+  input[type=range]::-moz-range-track { height:4px; border-radius:2px; background:rgba(255,255,255,.25); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:22px; height:22px; margin-top:-9px; border-radius:50%; background:#fff; box-shadow:0 1px 6px rgba(0,0,0,.4); }
+  input[type=range]::-moz-range-thumb { width:22px; height:22px; border:none; border-radius:50%; background:#fff; }
+
+  #hud { position:fixed; left:16px; bottom:16px; padding:10px 14px; border-radius:14px; display:grid; grid-template-columns:auto auto; gap:2px 16px;
+    font-variant-numeric:tabular-nums; font-size:12px; pointer-events:none; }
+  #hud span:nth-child(odd) { color:var(--dim); }
+  #hud span:nth-child(even) { text-align:right; min-width:44px; }
+  #loading { position:fixed; inset:0; display:grid; place-items:center; color:var(--dim); font-size:14px; letter-spacing:.02em; z-index:5;
+    background:rgba(10,11,15,.55); }
+  #loading[hidden] { display:none; }
+
+  @media (max-width:1180px) { #hud { display:none; } }
+  @media (max-width:640px) {
+    #top { top:max(10px, env(safe-area-inset-top)); left:12px; right:8px; }
+    #brand { font-size:14px; }
+    #brand span { display:none; }
+    .tool { min-width:44px; height:44px; padding:0 10px; }
+    .tool .lbl { display:none; }
+    #dock { bottom:max(10px, env(safe-area-inset-bottom)); padding:0 8px; gap:8px; }
+    #hint { font-size:12px; padding:0 10px; min-height:3.2em; }
+    .seg button { min-height:44px; padding:0 16px; font-size:14px; }
+    input[type=range] { width:min(52vw, 220px); height:44px; }
+  }
 </style>
 <script type="importmap">
 { "imports": {
@@ -24,6 +78,27 @@
 </head>
 <body>
 <div id="loading">Building the figure…</div>
+<div id="top" class="ui">
+  <div id="brand">Procedural figure<span>mesh, rig, skin and motion, all in code</span></div>
+  <div id="tools" class="glass">
+    <button class="tool" id="bLook" title="Look at cursor (L)" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg><span class="lbl">Look</span></button>
+    <button class="tool" id="bDebug" title="Debug: skeleton, contacts, foot planting (D)" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="2"/><path d="M12 7v6m0 0-4 7m4-7 4 7M6 10h12"/></svg><span class="lbl">Debug</span></button>
+    <button class="tool" id="bQuality" title="Mesh quality (Q)"><span id="qLbl">High</span></button>
+    <button class="tool" id="bReset" title="Reset camera (R)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg><span class="lbl">Camera</span></button>
+  </div>
+</div>
+<div id="dock" class="ui">
+  <p id="hint"></p>
+  <div id="moves" class="seg glass" role="tablist" aria-label="Movement"></div>
+  <div id="speedRow" class="glass"><label for="speed">Speed</label><input id="speed" type="range" min="0.4" max="1.4" step="0.05" value="1"><span id="speedVal">1.00×</span></div>
+</div>
+<div id="hud" class="ui glass">
+  <span>Frame rate</span><span id="h-fps"></span>
+  <span>Triangles</span><span id="h-tris"></span>
+  <span>Left knee</span><span id="h-knee"></span>
+  <span>Right elbow</span><span id="h-elbow"></span>
+  <span>Walk speed</span><span id="h-speed"></span>
+</div>
 
 <script type="module">
 import * as THREE from 'three';
@@ -1088,6 +1163,16 @@ figure.add(pelvis); figure.bind(skeleton);
 figure.castShadow = figure.receiveShadow = true; figure.frustumCulled = false;
 scene.add(figure);
 
+// nails ride on the distal finger bones (as in the original)
+const nails = [];
+{
+  const nailGeo = new THREE.SphereGeometry(1, 14, 10), nailMat = new THREE.MeshPhysicalMaterial({ color:0xf0c9b8, roughness:0.25, clearcoat:0.6 });
+  for (const A of arms) for (const F of A.FINGERS) {
+    const n = new THREE.Mesh(nailGeo, nailMat), r = key(F.rk, F.len[0]+F.len[1]+F.len[2]*0.6);
+    n.scale.set(F.len[2]*0.30, 0.0014, r*0.66); n.position.set(F.len[2]*0.60, r*0.80, 0);
+    F.bones[2].add(n); nails.push(n);
+  }
+}
 // eyes: white spheres with a painted iris, parented to the head; the look-at solver turns them
 const eyeTex = (() => { const c = document.createElement('canvas'); c.width = 256; c.height = 128; const g = c.getContext('2d');
   g.fillStyle = '#f4efe9'; g.fillRect(0, 0, 256, 128);
@@ -1901,28 +1986,276 @@ applyBody(1/60);
 for (const A of arms) A.settle();
 settleAll();
 
-document.getElementById('loading')?.remove();
+/* ═══════════════════════════════ §12  DEBUG VIEW ═══════════════════════════════
+   Skeleton (octahedra along each bone), the finger contact capsules, and foot planting: a ring under each foot
+   (green planted, amber swinging), the support polygon, and the centre of mass with its ground projection
+   (green inside the polygon, red outside).                                                                  */
+const dbg = { on:false, group:new THREE.Group(), bones:[], caps:[] };
+scene.add(dbg.group); dbg.group.visible = false;
+{
+  const P = [[0,0,0],[.15,.09,0],[.15,0,.09],[.15,-.09,0],[.15,0,-.09],[1,0,0]];
+  const T = [[0,2,1],[0,3,2],[0,4,3],[0,1,4],[5,1,2],[5,2,3],[5,3,4],[5,4,1]];
+  const bg = new THREE.BufferGeometry();
+  bg.setAttribute('position', new THREE.Float32BufferAttribute(T.flat().flatMap(i => P[i]), 3)); bg.computeVertexNormals();
+  const eg = new THREE.EdgesGeometry(bg), jg = new THREE.SphereGeometry(1, 12, 8);
+  const bm = new THREE.MeshStandardMaterial({ color:0xf3f6fb, roughness:0.55, flatShading:true, side:THREE.DoubleSide, depthTest:false, transparent:true, opacity:0.9 });
+  const em = new THREE.LineBasicMaterial({ color:0x11141b, depthTest:false, transparent:true });
+  const jm = new THREE.MeshStandardMaterial({ color:0x7fd4ff, roughness:0.4, emissive:0x1a4a66, depthTest:false, transparent:true });
+  const kids = new Map(); for (const b of bones) for (const c of b.children) if (c.isBone && !c.userData.helper) { if (!kids.has(b)) kids.set(b, c); }
+  for (const b of bones) {
+    if (b.userData.helper) continue;
+    const g = new THREE.Group();
+    let len = b.userData.len, dir = new V3(1, 0, 0);
+    if (bw.has(b)) {                                  // body bones rest unrotated: point the octahedron at the child
+      const c = kids.get(b) || (b === head ? null : null);
+      if (c && bw.has(c)) { dir = bw.get(c).clone().sub(bw.get(b)); len = dir.length(); dir.normalize(); }
+      else if (b.name.endsWith('clavicle')) { dir = new V3().fromArray(mirrorX(J.shoulder, b.name[0] === 'L' ? 1 : -1)).sub(bw.get(b)); len = dir.length(); dir.normalize(); }
+      else if (b === head) { dir.set(0, 1, 0); len = 0.19; }
+      else if (b.name.endsWith('toes')) { dir.set(0, 0, 1); len = 0.06; }
+      g.quaternion.setFromUnitVectors(new V3(1, 0, 0), dir);
+    }
+    if (len > 0) {
+      const w = Math.min(len*0.11, 0.016)/0.09;
+      const m = new THREE.Mesh(bg, bm); m.scale.set(len, w, w); m.renderOrder = 10; g.add(m);
+      const e = new THREE.LineSegments(eg, em); e.scale.copy(m.scale); e.renderOrder = 11; g.add(e);
+    }
+    const j = new THREE.Mesh(jg, jm); j.scale.setScalar(len > 0 ? Math.min(Math.max(len*0.07, 0.0028), 0.014) : 0.006); j.renderOrder = 12; g.add(j);
+    g.visible = false; b.add(g); dbg.bones.push(g);
+  }
+  // finger contact capsules, parented to each hand bone (the solver's chain() works in that frame)
+  const cm = new THREE.MeshBasicMaterial({ color:0xffd166, wireframe:true, transparent:true, opacity:0.55, depthTest:false });
+  for (const A of arms) for (const F of A.FINGERS) for (let k = 0; k < 3; k++) {
+    if (F.thumb && k === 0) continue;                                 // the thumb metacarpal is inside the palm and does not collide
+    const c = new THREE.Mesh(new THREE.CapsuleGeometry(F.sr[k], F.len[k], 3, 8), cm); c.renderOrder = 13; c.visible = false;
+    A.hand.add(c); dbg.caps.push({ c, A, F, k });
+  }
+  for (const A of arms) {                                              // the palm's collision box
+    const b = new THREE.Mesh(new THREE.BoxGeometry(0.086, 0.027, 0.084), cm); b.position.set(0.043, -0.0045, 0); b.visible = false; b.renderOrder = 13;
+    A.hand.add(b); dbg.caps.push({ c:b });
+  }
+  // foot planting
+  const ringG = new THREE.RingGeometry(0.05, 0.065, 32); ringG.rotateX(-PI/2);
+  dbg.rings = feet.map(() => { const m = new THREE.Mesh(ringG, new THREE.MeshBasicMaterial({ color:0x4ade80, transparent:true, opacity:0.85, depthTest:false })); m.renderOrder = 9; dbg.group.add(m); return m; });
+  dbg.pivots = feet.map(() => { const m = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 8), new THREE.MeshBasicMaterial({ color:0xffffff, depthTest:false })); m.renderOrder = 9; dbg.group.add(m); return m; });
+  dbg.poly = new THREE.LineLoop(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(36), 3)), new THREE.LineBasicMaterial({ color:0x7fd4ff, depthTest:false }));
+  dbg.poly.renderOrder = 9; dbg.group.add(dbg.poly);
+  dbg.com = new THREE.Mesh(new THREE.SphereGeometry(0.025, 16, 12), new THREE.MeshBasicMaterial({ color:0x4ade80, depthTest:false })); dbg.com.renderOrder = 9;
+  dbg.comG = new THREE.Mesh(new THREE.RingGeometry(0.012, 0.024, 20).rotateX(-PI/2), dbg.com.material); dbg.comG.renderOrder = 9;
+  dbg.comL = new THREE.Line(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(6), 3)), new THREE.LineDashedMaterial({ color:0xffffff, dashSize:0.03, gapSize:0.02, depthTest:false }));
+  dbg.group.add(dbg.com, dbg.comG, dbg.comL);
+}
+function pointInPoly(x, z, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i], b = pts[j];
+    if ((a.z > z) !== (b.z > z) && x < (b.x - a.x)*(z - a.z)/(b.z - a.z) + a.x) inside = !inside;
+  }
+  return inside;
+}
+const _cq = new Quat();
+function updateDebug() {
+  if (!dbg.on) return;
+  for (const { c, A, F, k } of dbg.caps) {
+    if (!A) continue;
+    const H = A.HS[A.FINGERS.indexOf(F)].p, a = H[k], b = H[k+1];
+    c.position.addVectors(a, b).multiplyScalar(0.5);
+    c.quaternion.setFromUnitVectors(AY, _v1.subVectors(b, a).normalize());
+  }
+  for (let i = 0; i < 2; i++) {
+    const F = feet[i], r = dbg.rings[i];
+    r.position.copy(F.g).setY(0.003); r.rotation.y = F.yaw;
+    r.material.color.set(F.state === 'plant' ? 0x4ade80 : 0xfbbf24); r.material.opacity = F.state === 'plant' ? 0.9 : 0.45;
+    const piv = F.pitch >= 0 ? HEEL_Z : BALL_Z;
+    dbg.pivots[i].position.copy(F.g).addScaledVector(fwdOf(F.yaw, _v1), piv).setY(0.005); dbg.pivots[i].visible = F.state === 'plant';
+  }
+  const pa = dbg.poly.geometry.attributes.position;
+  for (let i = 0; i < 12; i++) { const p = supportPts[Math.min(i, supportPts.length - 1)] || root.pos; pa.setXYZ(i, p.x, 0.004, p.z); }
+  pa.needsUpdate = true; dbg.poly.geometry.setDrawRange(0, supportPts.length);
+  const inside = supportPts.length >= 3 && pointInPoly(com.x, com.z, supportPts);
+  dbg.com.material.color.set(inside || MV.out.seated > 0.5 ? 0x4ade80 : 0xf87171);
+  dbg.com.position.copy(com); dbg.comG.position.set(com.x, 0.004, com.z);
+  const la = dbg.comL.geometry.attributes.position; la.setXYZ(0, com.x, com.y, com.z); la.setXYZ(1, com.x, 0.004, com.z); la.needsUpdate = true; dbg.comL.computeLineDistances();
+}
+
+/* ═══════════════════════════════ §13  UI ═══════════════════════════════ */
+const $ = id => document.getElementById(id);
+const ORDER = ['idle', 'walk', 'turn', 'wave', 'point', 'reach', 'pick', 'sit', 'squat', 'stretch'];
+let view = 'skin';
+function setMove(k) {
+  MV.set(k);
+  $('hint').textContent = MOVES[k].hint;
+  for (const b of $('moves').children) {
+    const on = b.dataset.k === k; b.classList.toggle('on', on && !MV.pending); b.classList.toggle('pending', on && !!MV.pending); b.setAttribute('aria-selected', on);
+    if (on) $('moves').scrollTo({ left: b.offsetLeft - ($('moves').clientWidth - b.offsetWidth)/2, behavior:'smooth' });
+  }
+}
+function setDebug(on) {
+  dbg.on = on; dbg.group.visible = on; $('bDebug').classList.toggle('on', on); $('bDebug').setAttribute('aria-pressed', on);
+  for (const g of dbg.bones) g.visible = on;
+  for (const { c } of dbg.caps) c.visible = on;
+  figure.material = on ? xrayMat : (quality === 'low' ? skinLite : skinMat); figure.castShadow = !on;
+  for (const n of nails) n.visible = !on;
+}
+function setLook(on) { ui.lookCursor = on; $('bLook').classList.toggle('on', on); $('bLook').setAttribute('aria-pressed', on); }
+const CAM_Y = 0.80;                          // orbit target height: a little below the hips, so the figure sits above the controls
+function resetCamera() {
+  // in front of the figure and a little to its left, wherever it has walked to; further back on narrow screens
+  const dist = camera.aspect < 0.8 ? 4.9 : 4.3;
+  const tgt = _v1.set(pelvis.position.x, CAM_Y, pelvis.position.z);
+  const dir = _v2.set(0, 0.16, 0).addScaledVector(leftOf(root.yaw, _v3), 0.42).addScaledVector(fwdOf(root.yaw, _v3), 0.89).normalize();
+  controls.target.copy(tgt); camFollow.copy(tgt); camera.position.copy(tgt).addScaledVector(dir, dist); controls.update();
+}
+function applyQualitySettings() {
+  const low = quality === 'low';
+  renderer.setPixelRatio(Math.min(devicePixelRatio, low ? 1.5 : 2));
+  keyL.shadow.mapSize.set(low ? 1024 : 2048, low ? 1024 : 2048); if (keyL.shadow.map) { keyL.shadow.map.dispose(); keyL.shadow.map = null; }
+  renderer.shadowMap.type = low ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+  if (!dbg.on) figure.material = low ? skinLite : skinMat;
+  $('qLbl').textContent = QUALITY[quality].label + (innerWidth > 640 ? ' detail' : '');
+  $('h-tris').textContent = (figure.geometry.userData.tris/1000).toFixed(0) + 'k';
+}
+function setQuality(q) {
+  if (q === quality) return;
+  quality = q; $('loading').hidden = false; $('loading').textContent = 'Rebuilding the mesh…';
+  // let the overlay paint before the (blocking) rebuild
+  requestAnimationFrame(() => setTimeout(() => {
+    const old = figure.geometry; figure.geometry = buildFigure(QUALITY[q]); old.dispose(); figure.updateMorphTargets();
+    applyQualitySettings(); $('loading').hidden = true;
+    const u = new URL(location.href); u.searchParams.set('q', q); history.replaceState(null, '', u);
+  }, 30));
+}
+for (const k of ORDER) {
+  const b = document.createElement('button'); b.textContent = MOVES[k].label; b.dataset.k = k; b.setAttribute('role', 'tab');
+  b.onclick = () => setMove(k); $('moves').append(b);
+}
+$('bLook').onclick = () => setLook(!ui.lookCursor);
+$('bDebug').onclick = () => setDebug(!dbg.on);
+$('bReset').onclick = resetCamera;
+$('bQuality').onclick = () => setQuality(quality === 'high' ? 'low' : 'high');
+$('speed').oninput = e => { ui.speed = +e.target.value; $('speedVal').textContent = ui.speed.toFixed(2) + '×'; };
+addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  const i = '1234567890'.indexOf(e.key); if (i >= 0 && ORDER[i]) setMove(ORDER[i]);
+  if (e.key === ' ') { paused = !paused; e.preventDefault(); }
+  if (e.key === 'd') setDebug(!dbg.on);
+  if (e.key === 'l') setLook(!ui.lookCursor);
+  if (e.key === 'r') resetCamera();
+  if (e.key === 'q') setQuality(quality === 'high' ? 'low' : 'high');
+});
+
+// pointer: drag the target (reach, point, turn); with "look" on, the head follows the cursor (or the last tap)
+const el = renderer.domElement, ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), plane = new THREE.Plane();
+let dragId = null, downAt = null;
+const setRay = e => { ndc.set(e.clientX/innerWidth*2 - 1, -(e.clientY/innerHeight)*2 + 1); ray.setFromCamera(ndc, camera); };
+function cursorPoint(e) {                    // where the cursor is, on a camera-facing plane through the head
+  setRay(e); const h = worldP(head, _v1);
+  plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(_v2).negate(), _v3.copy(h).addScaledVector(_v2, -0.4));
+  if (ray.ray.intersectPlane(plane, _v4)) ui.cursor.copy(_v4);
+}
+el.addEventListener('pointerdown', e => {
+  downAt = { x:e.clientX, y:e.clientY };
+  if (props.target.vis < 0.5) return;
+  setRay(e);
+  if (ray.intersectObject(props.target.hit).length) {
+    dragId = e.pointerId; marker.dragging = true; controls.enabled = false; el.setPointerCapture(e.pointerId); el.style.cursor = 'grabbing';
+    plane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(_v1).negate(), marker.pos);
+    e.stopImmediatePropagation();
+  }
+}, true);
+el.addEventListener('pointermove', e => {
+  if (dragId === e.pointerId) {
+    setRay(e);
+    if (ray.ray.intersectPlane(plane, _v1)) {
+      // keep it within a sensible distance of the figure and above the floor
+      const rel = _v2.subVectors(_v1, _v3.set(root.pos.x, 1.0, root.pos.z)); if (rel.length() > 2.6) rel.setLength(2.6);
+      marker.goal.copy(_v3).add(rel); marker.goal.y = Math.max(marker.goal.y, ORB_R + 0.02); marker.pos.copy(marker.goal);
+    }
+    return;
+  }
+  if (e.pointerType === 'mouse') {
+    if (ui.lookCursor) cursorPoint(e);
+    if (props.target.vis > 0.5) { setRay(e); el.style.cursor = ray.intersectObject(props.target.hit).length ? 'grab' : ''; }
+  }
+});
+const endDrag = e => {
+  if (dragId === e.pointerId) { dragId = null; marker.dragging = false; marker.hold = 5; controls.enabled = true; el.style.cursor = ''; }
+  else if (ui.lookCursor && downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) < 8) cursorPoint(e);   // a tap sets the look point
+  downAt = null;
+};
+el.addEventListener('pointerup', endDrag); el.addEventListener('pointercancel', endDrag);
+addEventListener('resize', () => { applyQualitySettings(); });
+
+/* ═══════════════════════════════ §14  MAIN LOOP ═══════════════════════════════ */
 // the orbit target glides after the figure, and the camera moves with it, so orbiting still works while walking
-const camFollow = new V3(0, 0.92, 0);
+const camFollow = new V3(0, CAM_Y, 0);
 function followCamera(dt) {
-  const want = _v3.set(pelvis.position.x, 0.92, pelvis.position.z), k = 1 - Math.exp(-dt*2.5);
+  const want = _v3.set(pelvis.position.x, CAM_Y, pelvis.position.z), k = 1 - Math.exp(-dt*2.5);
   const d = _v4.subVectors(want, camFollow).multiplyScalar(k);
   camFollow.add(d); controls.target.add(d); camera.position.add(d);
   keyL.target.position.copy(camFollow); keyL.position.copy(camFollow).add(_v4.set(1.6, 2.5, 2.6));
 }
 const clock = new THREE.Clock();
-let paused = false;
+let paused = false, fpsN = 0, fpsT = 0, hudT = 0;
 function frame() {
-  const dt = Math.min(clock.getDelta(), 0.05);
+  if (directing) { requestAnimationFrame(frame); return; }
+  const raw = clock.getDelta(), dt = Math.min(raw, 0.05);
   if (!paused) update(dt);
   followCamera(dt);
   controls.update();
+  updateDebug();
   renderer.render(scene, camera);
+  fpsN++; fpsT += raw; hudT += raw;           // the frame rate uses wall-clock time, not the clamped step
+  if (hudT > 0.25) {
+    hudT = 0;
+    if (MV.pending == null) for (const b of $('moves').children) { b.classList.toggle('pending', false); b.classList.toggle('on', b.dataset.k === MV.current); }
+    if (fpsT > 0.5) { $('h-fps').textContent = Math.round(fpsN/fpsT); fpsN = 0; fpsT = 0; }
+    $('h-knee').textContent = (legState[0].flex*DEG).toFixed(0) + '°';
+    $('h-elbow').textContent = (arms[1].st.flex*DEG).toFixed(0) + '°';
+    $('h-speed').textContent = root.speed.toFixed(2) + ' m/s';
+  }
   requestAnimationFrame(frame);
 }
+/* ── director: a scripted tour of every movement, rendered frame by frame (so it never drops frames) and posted
+   to the local recorder (record-server.js), which writes the image files for encoding. ── */
+async function direct({ fps = 60, W = 1080, H = 1350, perMove = 7, post = '/frame' } = {}) {
+  await envReady;
+  const wasPaused = paused; paused = true; directing = true;
+  for (const e of document.querySelectorAll('.ui')) e.style.display = 'none';
+  const oldPR = renderer.getPixelRatio();
+  renderer.setPixelRatio(1); renderer.setSize(W, H, false); camera.aspect = W/H; camera.updateProjectionMatrix(); controls.enabled = false;
+  const out = document.createElement('canvas'); out.width = W; out.height = H; const ctx = out.getContext('2d');
+  const dt = 1/fps; let sent = 0, orbit = 0.5;
+  for (const k of ORDER) {
+    setMove(k);
+    const n = Math.round(perMove*fps);
+    for (let f = 0; f < n; f++) {
+      update(dt); orbit += dt*0.12;
+      // slow orbit around the figure, from the front three-quarter side
+      const tgt = _v1.set(pelvis.position.x, 0.85, pelvis.position.z), dir = _v2.set(Math.sin(root.yaw + orbit), 0.18, Math.cos(root.yaw + orbit)).normalize();
+      camera.position.copy(tgt).addScaledVector(dir, 4.1); camera.lookAt(tgt);
+      keyL.target.position.copy(tgt); keyL.position.copy(tgt).add(_v3.set(1.6, 2.5, 2.6));
+      renderer.render(scene, camera);
+      ctx.drawImage(renderer.domElement, 0, 0);
+      const fade = Math.min(smooth(0.1, 0.6, f*dt), 1 - smooth(perMove - 0.5, perMove - 0.1, f*dt));
+      ctx.globalAlpha = fade; ctx.fillStyle = '#e9edf5'; ctx.font = '600 44px "Segoe UI", system-ui, sans-serif'; ctx.fillText(MOVES[k].label, 48, H - 70); ctx.globalAlpha = 1;
+      const blob = await new Promise(r => out.toBlob(r, 'image/jpeg', 0.92));
+      const res = await fetch(post + '?n=' + sent, { method:'POST', body:blob });
+      if (!res.ok) throw new Error('recorder refused frame ' + sent);
+      sent++;
+    }
+  }
+  renderer.setPixelRatio(oldPR); renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  controls.enabled = true; for (const e of document.querySelectorAll('.ui')) e.style.display = '';
+  directing = false; paused = wasPaused; resetCamera();
+  return { frames:sent, seconds:sent/fps };
+}
+let directing = false;
+setMove('idle'); setDebug(false); applyQualitySettings(); resetCamera();
+$('loading').hidden = true;
 frame();
-window.rig = { ready:true, geo, figure, bones, arms, legs, shotView, scene, camera, controls, THREE, testPose, body, applyBody,
-  MV, MOVES, ui, root, feet, gait, com, supportPts, update, followCamera, legState, ball, props, marker, pause: v => paused = v,
+window.rig = { ready:true, get geo() { return figure.geometry; }, figure, bones, arms, legs, shotView, scene, camera, controls, THREE, testPose, body, applyBody,
+  MV, MOVES, ui, root, feet, gait, com, supportPts, update, followCamera, legState, ball, props, marker, setMove, setDebug, setLook, setQuality, resetCamera,
+  renderNow: () => { updateDebug(); renderer.render(scene, camera); }, pause: v => paused = v, direct, envReady,
   step: (sec, cb) => { const n = Math.round(sec*60); for (let i = 0; i < n; i++) { update(1/60); cb && cb(i); } } };
 </script>
 </body>
