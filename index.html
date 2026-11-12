@@ -378,7 +378,239 @@ function makeArm(side) {
     return G;
   }
 
-  return { side, bones, root, upper, half, fore, tw1, tw2, tw3, hand, ut0, ut1, B, FINGERS, armWeights, buildGeometry };
+  /* ── springs: every animated channel is a damped spring (as before) ── */
+  const { sp, VS, run: runSprings } = springBank();
+  const tgtS = new VS(0.1,-0.5,0.1, 9), poleS = new VS(0.3,-0.2,-1, 5), palmS = new VS(-1,0,0, 6);
+  const shS = new VS(0,0,0, 6);
+  const twS = sp(0, 13, 0.9), wflexS = sp(0, 12, 0.7), wdevS = sp(0, 12, 0.7);
+  const curlS = FINGERS.map((F,f) => [0,1,2].map(j => sp(0.2, 19-2.5*j-0.6*f, 0.72)));   // distal joints & outer fingers lag → overlap
+  const spreadS = FINGERS.map(() => sp(0, 12, 0.8));
+  const rollS = sp(0, 10, 0.85), bicepS = sp(0, 8), tenseS = sp(0, 8);
+
+  /* ── desired pose, written by the movement system in WORLD space (converted to arm space in solve) ── */
+  const P = { tgt:new V3(), pole:new V3(), palm:new V3(), palmAt:false, tgtW:9, wflex:0, wdev:0, tense:0, roll:0,
+              curl:FINGERS.map(() => [0,0,0]), spread:[0,0,0,0,0], surfY:null, orb:false };
+  const blendCurl = (f, A, Bp, k) => { for (let j = 0; j < 3; j++) P.curl[f][j] = lerp(A[f][j], Bp[f][j], k); };
+  const setThumb = (A, Bp, k) => { for (let j = 0; j < 3; j++) P.curl[0][j] = lerp(A[j], Bp[j], k); P.spread[0] = lerp(A[3], Bp[3], k); P.roll = lerp(A[4], Bp[4], k); };
+  // closing a hand is not one motion: the knuckles fold first and the fingertips gather at the thumb, then the fingers roll shut.
+  // Opening runs the same path backwards.
+  const fistBlend = (f, c) => c < 0.5 ? blendCurl(f, OPEN, BEAK, smooth(0, 0.5, c)) : blendCurl(f, BEAK, FIST, smooth(0.5, 1, c));
+  const gripPose = g => {
+    for (let f = 1; f < 5; f++) { blendCurl(f, OPEN, GRAB, g); P.spread[f] = lerp(SPLAY[f]*0.8, [0,0.08,0,0.06,0.10][f], g); }
+    setThumb(THUMB.open, THUMB.grab, g);
+  };
+  // hand shapes used by the movement library (all write P; the springs and the contact solver do the rest)
+  const shapes = {
+    relax(t, k = 1) { for (let f = 1; f < 5; f++) { for (let j = 0; j < 3; j++) P.curl[f][j] = RELAX[f][j]*k + 0.05*noise(t*0.6, f*3+j+(side==='R'?7:0)); P.spread[f] = 0; }
+                      setThumb(THUMB.relax, THUMB.relax, 0); },
+    open(k = 1) { for (let f = 1; f < 5; f++) { blendCurl(f, RELAX, OPEN, k); P.spread[f] = SPLAY[f]*k; } setThumb(THUMB.relax, THUMB.open, k); },
+    grip: gripPose,
+    fist(c) {                                         // two-stage fist with the delayed thumb, c ∈ [0,1]
+      for (let f = 1; f < 5; f++) { const cf = clamp(c*1.25 - (4-f)*0.06, 0, 1); fistBlend(f, cf); P.spread[f] = SPLAY[f]*(1 - smooth(0, 0.35, cf)); }
+      setThumb(THUMB.open, THUMB.ready, smooth(0, 0.4, c));
+      const cur = [P.curl[0][0], P.curl[0][1], P.curl[0][2], P.spread[0], P.roll];
+      setThumb(cur, THUMB.fist, smooth(0.35, 1, c));
+    },
+    point(k = 1) { for (let f = 1; f < 5; f++) { blendCurl(f, RELAX, POINT, k); P.spread[f] = 0; } setThumb(THUMB.relax, THUMB.fist, k*0.9); },
+  };
+
+  /* ── solver state (arm space) ── */
+  const S = new V3(), toT = new V3(), dir = new V3(), perp = new V3(), E = new V3(), Wp = new V3(), Wprev = new V3(0.1,-0.5,0.1);
+  const Xu = new V3(), Yu = new V3(), Zu = new V3(), Mb = new M4();
+  const Qu = new Quat(), Qf = new Quat(), Qt = new Quat(), Qh = new Quat(), q1 = new Quat(), q2 = new Quat(), eul = new THREE.Euler();
+  const qSw = new Quat(), qTw = new Quat(), qHalf = new Quat(), qHalfInv = new Quat(), qI = new Quat();
+  const vf = new V3(), D = new V3(), tv = new V3(), tv2 = new V3(), palmPoint = new V3(0.1,-0.5,0.1);
+  const Pa = { tgt:new V3(), pole:new V3(), palm:new V3() };
+  const st = { flex:0, up:new V3(0,1,0), oy:0, M:new M4(), Minv:new M4(), rootBase:new M4(), surfY:null };
+
+  /* ───────── hand collisions (as before) ─────────
+     Every finger bone is a capsule. Colliders: the palm, the other fingers (for the thumb), the ball and a support
+     surface. A finger closes joint by joint from the knuckle outward and each joint stops when its part of the finger
+     touches something, which is what makes a grip wrap around an object and the thumb rest on a fist.
+     Heights are measured along the world's up direction expressed in arm space (st.up), so the arm space may tilt. */
+  for (const F of FINGERS) { const l = F.len; F.sr = [key(F.rk, l[0]/2), key(F.rk, l[0]+l[1]/2), key(F.rk, l[0]+l[1]+l[2]*0.6)]; }
+  const HS = FINGERS.map(() => ({ p:[new V3(),new V3(),new V3(),new V3()], pose:[0.2,0.2,0.2,0], sm:[0.2,0.2,0.2,0] }));
+  const cq = new Quat(), cq2 = new Quat(), cv = new V3(), cv2 = new V3(), orbH = new V3();
+  let needLift = 0, pushUp = 0;                          // how much the support surface is pushing the whole hand up
+  let orbOn = false, thumbRoll = 0;                      // thumbRoll: the thumb turning about its own length to face the fingers (opposition)
+  const armY = v => v.dot(st.up) + st.oy;                // world height of an arm-space point
+  function chain(F, c0, c1, c2, sp, out) {                // joint positions in the hand's own frame
+    cq.copy(F.quat).multiply(cq2.setFromAxisAngle(AY, sp*F.spreadSign + F.fanFix));
+    if (F.thumb) cq.multiply(cq2.setFromAxisAngle(AX, thumbRoll));
+    const l = F.len, a1 = c0+c1, a2 = a1+c2;
+    out[0].fromArray(F.base);
+    out[1].set(l[0]*Math.cos(c0), -l[0]*Math.sin(c0), 0).applyQuaternion(cq).add(out[0]);
+    out[2].set(l[1]*Math.cos(a1), -l[1]*Math.sin(a1), 0).applyQuaternion(cq).add(out[1]);
+    out[3].set(l[2]*Math.cos(a2), -l[2]*Math.sin(a2), 0).applyQuaternion(cq).add(out[2]);
+  }
+  function hits(f, P, j0, table) {                         // does finger f, from bone j0 outward, touch anything?
+    const F = FINGERS[f], sr = F.sr;
+    for (let k = Math.max(j0, F.thumb ? 1 : 0); k < 3; k++) {
+      const a = P[k], b = P[k+1], r = sr[k];
+      for (let i = 1; i <= 2; i++) {
+        cv.lerpVectors(a, b, i/2);
+        if (k >= 1 && cv.x > 0 && cv.x < 0.086 && Math.abs(cv.z) < 0.042 && cv.y > -(0.0135+r)+0.0045) return true;   // palm
+        if (table && armY(cv2.copy(cv).applyQuaternion(Qh).add(Wp)) < st.surfY + r - 0.0005) return true;            // support surface
+      }
+      if (orbOn && segPointDist2(a, b, orbH) < (ORB_R + r - 0.004)**2) return true;                                   // ball
+      if (F.thumb) for (let g = 1; g < 5; g++) {                                                                       // other fingers
+        const H = HS[g].p, G = FINGERS[g];
+        for (let m = 0; m < 3; m++) if (segDist2(a, b, H[m], H[m+1]) < (r + G.sr[m] - 0.0045)**2) return true;
+      }
+    }
+    return false;
+  }
+  function resolveFinger(f, d0, d1, d2, sp, overTable, dt) {
+    // Each finger keeps the pose it had last frame and moves from there, a limited amount per frame:
+    //  - if something has moved into it, it uncurls a little at a time until it is clear;
+    //  - otherwise each joint, knuckle first, moves toward where it wants to be and stops where it would press in.
+    // Joints that are blocked wait while the rest keep closing, which is what wraps a grip around an object.
+    // Because the pose only ever changes by small steps, contact is smooth instead of snapping between solutions.
+    const F = FINGERS[f], S = HS[f], P = S.p, q = S.pose, want = [d0, d1, d2];
+    const lo = F.thumb ? [-0.6, -0.1, -0.1] : [-0.3, 0, 0];
+    const hit = () => { chain(F, q[0], q[1], q[2], q[3], P); return hits(f, P, 0, overTable); };
+    const maxStep = 12*dt;
+    q[3] += clamp(sp - q[3], -maxStep, maxStep);
+    if (hit()) {
+      const c0 = q[0], c1 = q[1], c2 = q[2], set = u => { q[0] = lerp(c0, lo[0], u); q[1] = lerp(c1, lo[1], u*0.7); q[2] = lerp(c2, lo[2], u*0.7); };
+      set(1);
+      if (hit()) {
+        // even fully uncurled it is still touching, so opening this finger cannot help: hold the pose rather than flinging it open
+        set(0);
+        if (overTable) { chain(F, q[0], q[1], q[2], q[3], P); for (let k = F.thumb ? 1 : 0; k < 3; k++) needLift = Math.max(needLift, st.surfY + F.sr[k] - armY(cv2.copy(P[k+1]).applyQuaternion(Qh).add(Wp))); }
+      } else {
+        // uncurl by the smallest amount that clears it, and no faster than a finger can move
+        let a = 0, b = 1; for (let i = 0; i < 6; i++) { const m = (a+b)/2; set(m); if (hit()) a = m; else b = m; }
+        const span = Math.max(1e-4, Math.abs(c0-lo[0]), Math.abs(c1-lo[1])*0.7, Math.abs(c2-lo[2])*0.7);
+        set(Math.min(b, maxStep/span));
+      }
+    } else {
+      for (let j = 0; j < 3; j++) {
+        const from = q[j], step = clamp(want[j] - from, -maxStep, maxStep);
+        if (Math.abs(step) < 1e-5) continue;
+        q[j] = from + step;
+        if (hit()) { let a = 0, b = 1; for (let i = 0; i < 5; i++) { const m = (a+b)/2; q[j] = from + step*m; if (hit()) b = m; else a = m; } q[j] = from + step*a; }
+      }
+    }
+    chain(F, q[0], q[1], q[2], q[3], P);
+  }
+  function levelWrist(slope) {                           // wrist flex that makes the hand point along a given slope (0 = level)
+    const A = tv.set(1,0,0).applyQuaternion(Qt).dot(st.up), Bq = tv.set(0,1,0).applyQuaternion(Qt).dot(st.up), R = Math.hypot(A, Bq);
+    if (R < 1e-4) return 0;
+    const p0 = Math.atan2(Bq, A), d = Math.acos(clamp(Math.sin(slope)/R, -1, 1)), w1 = p0 - d, w2 = p0 + d;
+    return clamp(Math.abs(w1) < Math.abs(w2) ? w1 : w2, -0.9, 0.9);
+  }
+
+  /* ───────── solve: world-space wishes → arm space → springs → IK → fingers ─────────
+     X.M     arm space → world (chest rotation at the shoulder; mirrored for the right arm)
+     X.rootBase  inverse(clavicle world) · X.M, so the root's local matrix puts arm space where it belongs
+     X.morph the figure's morph influence array                                                     */
+  const _m = new M4(), _p = new V3(), _s = new V3(1,1,1);
+  function solve(dt, X) {
+    st.M.copy(X.M); st.Minv.copy(X.M).invert(); st.rootBase.copy(X.rootBase);
+    st.up.set(0,1,0).transformDirection(st.Minv); st.oy = _p.setFromMatrixPosition(X.M).y; st.surfY = P.surfY;
+    Pa.tgt.copy(P.tgt).applyMatrix4(st.Minv);
+    Pa.pole.copy(P.pole).transformDirection(st.Minv); Pa.palm.copy(P.palm).transformDirection(st.Minv);
+    if (P.palmAt) Pa.tgt.sub(tv.set(0.075,-0.046,0).applyQuaternion(Qh));      // the wish is for the palm, not the wrist
+
+    // overlapping action: the hand and fingers drag behind the wrist's velocity (vf, in the forearm frame)
+    const dragF = clamp(vf.y*0.55, -0.45, 0.45), dragD = clamp(vf.z*0.55, -0.4, 0.4);
+    Pa.tgt.addScaledVector(st.up, pushUp);
+    // anatomical reach limits: the hand cannot go far behind the back or across the chest
+    _p.copy(Pa.tgt); const rl = _p.length();
+    if (rl > 1e-4) { const back = -_p.z/rl; if (back > 0.55) _p.z = -0.55*rl; if (_p.x < -0.30) _p.x = -0.30; Pa.tgt.copy(_p); }
+    tgtS.to(Pa.tgt, P.tgtW); poleS.to(Pa.pole); palmS.to(Pa.palm);
+    wflexS.t = clamp(P.wflex - dragF, -1.2, 1.0); wdevS.t = clamp(P.wdev + dragD, -0.5, 0.5);
+    for (let f = 0; f < 5; f++) {
+      for (let j = 0; j < 3; j++) {
+        // fingers share tendons: moving one drags its neighbours part of the way (the ring finger most of all)
+        const c = P.curl, want = f === 0 ? c[0][j] : f === 1 ? 0.88*c[1][j]+0.12*c[2][j] : f === 2 ? 0.10*c[1][j]+0.75*c[2][j]+0.15*c[3][j]
+                           : f === 3 ? 0.20*c[2][j]+0.60*c[3][j]+0.20*c[4][j] : 0.25*c[3][j]+0.75*c[4][j];
+        const lim = (f === 0 ? [[-0.6,1.2],[-0.1,1.4],[-0.1,1.4]] : [[-0.3,1.6],[0,1.9],[0,1.45]])[j];   // how far each joint can really go
+        curlS[f][j].t = clamp(want + clamp(vf.y*0.5, -0.15, 0.4)*(0.5+0.35*j), lim[0], lim[1]);
+      }
+      spreadS[f].t = P.spread[f];
+    }
+    tenseS.t = P.tense; rollS.t = P.roll;
+    runSprings(dt);
+
+    // ── analytic two-bone IK with a pole vector
+    shS.get(S);
+    tgtS.get(toT).sub(S); const dist = toT.length() || 1e-6; dir.copy(toT).divideScalar(dist);
+    const d = clamp(dist, 0.18, L1+L2-0.004);
+    shS.to(tv.copy(dir).multiplyScalar(0.03*smooth(0.38,0.58,dist)).add(tv2.set(0, 0.018*Math.max(0,dir.y), 0)));  // shoulder leans into long reaches
+    poleS.get(perp).normalize(); perp.addScaledVector(dir, -perp.dot(dir));
+    if (perp.lengthSq() < 1e-5) perp.set(0.3,-1,0.2).addScaledVector(dir, -tv.set(0.3,-1,0.2).dot(dir));
+    perp.normalize();
+    const x = (L1*L1 - L2*L2 + d*d)/(2*d), h = Math.sqrt(Math.max(0, L1*L1 - x*x));
+    E.copy(S).addScaledVector(dir, x).addScaledVector(perp, h);
+    Wp.copy(S).addScaledVector(dir, d);
+    Xu.copy(E).sub(S).normalize();
+    Zu.copy(perp).negate(); Zu.addScaledVector(Xu, -Zu.dot(Xu)).normalize();
+    Yu.crossVectors(Zu, Xu);
+    Qu.setFromRotationMatrix(Mb.makeBasis(Xu, Yu, Zu));
+    const flex = st.flex = PI - Math.acos(clamp((L1*L1 + L2*L2 - d*d)/(2*L1*L2), -1, 1));
+    Qf.copy(Qu).multiply(q1.setFromAxisAngle(AY, -flex));
+
+    // ── forearm twist: roll about the forearm until the palm faces the wanted direction, within anatomical limits
+    palmS.get(D).normalize().applyQuaternion(q1.copy(Qf).invert());
+    if (Math.hypot(D.y, D.z) > 0.2) twS.t = clamp(Math.atan2(-D.z, -D.y), -1.4, 1.5);
+    const tw = twS.x;
+    Qt.copy(Qf).multiply(q1.setFromAxisAngle(AX, tw));
+
+    // ── shoulder and upper-arm helpers (NEW). The upper arm's rotation splits into swing (where it points) and
+    // twist (roll about itself). The root turns half the swing, so the top of the shoulder and the armpit are
+    // shared between the torso and the arm instead of folding at one line; the twist helpers spread the roll.
+    swingTwist(Qu, AX, qSw, qTw);
+    qHalf.copy(qI).slerp(qSw, 0.5); qHalfInv.copy(qHalf).invert();
+    A.root.matrix.copy(st.rootBase).multiply(_m.compose(S, qHalf, _s));
+    upper.quaternion.copy(qHalfInv).multiply(Qu);
+    ut0.quaternion.copy(qHalfInv).multiply(qSw).multiply(q2.copy(qI).slerp(qTw, 0.2));
+    ut1.quaternion.copy(qHalfInv).multiply(qSw).multiply(q2.copy(qI).slerp(qTw, 0.6));
+    half.quaternion.setFromAxisAngle(AY, -flex/2);
+    // corrective: a mitre joint is wider across the bisector by 1/cos(angle/2). Stretching the half-angle
+    // bone that way keeps the inner crease from caving into a pit and gives the elbow its point.
+    half.scale.z = Math.min(1.45, 1 + 0.5*(1/Math.cos(flex/2) - 1));
+    fore.quaternion.setFromAxisAngle(AY, -flex);
+    q1.setFromAxisAngle(AX, tw/3); tw1.quaternion.copy(q1); tw2.quaternion.copy(q1); tw3.quaternion.copy(q1);
+    hand.quaternion.setFromEuler(eul.set(0, wdevS.x, wflexS.x, 'YZX'));
+    Qh.copy(Qt).multiply(hand.quaternion);
+    palmPoint.set(0.075,-0.046,0).applyQuaternion(Qh).add(Wp);
+
+    // ── fingers: resolve contacts in hand space, then pose the bones (thumb last: it yields to the fingers)
+    thumbRoll = rollS.x;
+    orbOn = !!P.orb; if (orbOn) orbH.copy(P.orb).applyMatrix4(st.Minv).sub(Wp).applyQuaternion(q1.copy(Qh).invert());
+    const overTable = P.surfY != null, ka = 1 - Math.exp(-dt*40);
+    needLift = 0;
+    for (const f of [1,2,3,4,0]) {
+      const F = FINGERS[f], b = F.bones, c = curlS[f], S = HS[f];
+      resolveFinger(f, c[0].x, c[1].x, c[2].x, spreadS[f].x, overTable, dt);
+      for (let i = 0; i < 4; i++) S.sm[i] += (S.pose[i] - S.sm[i])*ka;
+      const c0 = S.sm[0], c1 = S.sm[1], c2 = S.sm[2];
+      q1.setFromAxisAngle(AY, S.sm[3]*F.spreadSign + F.fanFix); if (F.thumb) q1.multiply(q2.setFromAxisAngle(AX, thumbRoll));
+      b[0].quaternion.copy(b[0].userData.rest).multiply(q1).multiply(q2.setFromAxisAngle(AZ, -c0));
+      b[1].quaternion.setFromAxisAngle(AZ, -c1);
+      b[2].quaternion.setFromAxisAngle(AZ, -c2);
+      const hb = F.helpers;
+      hb[0].quaternion.copy(b[0].userData.rest).multiply(q1).multiply(q2.setFromAxisAngle(AZ, -c0/2));
+      hb[1].quaternion.setFromAxisAngle(AZ, -c1/2);
+      hb[2].quaternion.setFromAxisAngle(AZ, -c2/2);
+    }
+    pushUp = clamp(needLift > 0 ? pushUp + needLift*Math.min(1, dt*10) : pushUp - 0.08*dt, 0, 0.05);
+    bicepS.t = smooth(0.4, 2.2, flex)*0.85 + tenseS.x*0.5;
+    if (X.morph) { X.morph[MORPH.bicep[A.i]] = bicepS.x; X.morph[MORPH.fore[A.i]] = tenseS.x; }
+
+    // wrist velocity in the forearm frame feeds next frame's drag
+    tv.copy(Wp).sub(Wprev).divideScalar(Math.max(dt, 1e-4)).applyQuaternion(q1.copy(Qt).invert());
+    vf.lerp(tv, 1 - Math.exp(-dt*10)); Wprev.copy(Wp);
+  }
+  // snap every spring to its target (used when a pose must be applied at once, e.g. at start-up)
+  function settle() { for (const s of [tgtS, poleS, palmS, shS]) for (const c of s.s) { c.x = c.t; c.v = 0; } }
+  const toWorld = (v, out) => out.copy(v).applyMatrix4(st.M);
+
+  const A = { side, bones, root, upper, half, fore, tw1, tw2, tw3, hand, ut0, ut1, B, FINGERS, armWeights, buildGeometry,
+    P, shapes, solve, settle, HS, st, toWorld, palmPoint, wrist:Wp, Qh, springs:{ tgtS, twS, wflexS, wdevS, curlS }, get pushUp() { return pushUp; } };
+  return A;
 }
 
 /* ═══════════════════════════════ §3  BODY SKELETON ═══════════════════════════════
@@ -437,6 +669,81 @@ const ARM_N = arms[0].bones.length;
 const boneIndex = b => b.userData.index;
 pelvis.updateMatrixWorld(true);
 
+/* ═══════════════════════════════ §3b  POSING PRIMITIVES ═══════════════════════════════
+   These write joint rotations through the helper bones. Body bones rest unrotated, so a bone's world rotation is
+   just the product of the local rotations above it; each function takes WORLD rotations and converts.       */
+const _q1 = new Quat(), _q2 = new Quat(), _q3 = new Quat(), _qs = new Quat(), _qt = new Quat(), _qI = new Quat();
+const _v1 = new V3(), _v2 = new V3(), _v3 = new V3(), _v4 = new V3(), _m1 = new M4(), _e1 = new THREE.Euler();
+const worldQ = (b, out) => b.getWorldQuaternion(out);
+const worldP = (b, out) => b.getWorldPosition(out);
+const mitre = a => Math.min(1.45, 1 + 0.5*(1/Math.cos(a/2) - 1));
+const LEG = { T:0, S:0 };                                // filled in once the leg lengths are known
+const legState = [0, 1].map(() => ({ hip:new V3(), knee:new V3(), ankle:new V3(), flex:0, ankleRel:new Quat(), dorsi:0 }));
+/* Analytic two-bone leg IK. hip: world hip joint; ankle: wanted world ankle; pole: direction the knee should point;
+   footQ: wanted world rotation of the foot; toe: toe bend (+ = toes lifted relative to the foot).            */
+function poseLeg(i, ankle, pole, footQ, toe, pelvisQ) {
+  const L = legs[i], S = legState[i], T = THIGH, Sh = SHIN;
+  worldP(L.thigh, S.hip);
+  const dvec = _v1.copy(ankle).sub(S.hip); let d = dvec.length(); const dir = dvec.divideScalar(d || 1);
+  // knee range 0..150°: the hip–ankle distance is kept between the fully folded and the fully straight leg
+  const dMin = Math.sqrt(T*T + Sh*Sh - 2*T*Sh*Math.cos(PI - 150/DEG)), dMax = (T + Sh)*0.9995;
+  d = clamp(d, dMin, dMax);
+  const n = _v2.copy(pole).addScaledVector(dir, -pole.dot(dir));
+  if (n.lengthSq() < 1e-6) n.set(0,0,1).addScaledVector(dir, -dir.z);
+  n.normalize();
+  const x = (T*T - Sh*Sh + d*d)/(2*d), h = Math.sqrt(Math.max(0, T*T - x*x));
+  S.knee.copy(S.hip).addScaledVector(dir, x).addScaledVector(n, h);
+  S.ankle.copy(S.hip).addScaledVector(dir, d);
+  // thigh frame: +Y runs from knee to hip (the bone rests pointing down), +Z faces the kneecap
+  const ty = _v3.copy(S.hip).sub(S.knee).normalize();
+  const tz = _v4.copy(n).addScaledVector(ty, -n.dot(ty)).normalize();
+  const tx = new V3().crossVectors(ty, tz);
+  const thighW = _q1.setFromRotationMatrix(_m1.makeBasis(tx, ty, tz));
+  // shin frame shares the knee hinge axis (x)
+  const sy = new V3().copy(S.knee).sub(S.ankle).normalize(), sz = new V3().crossVectors(tx, sy);
+  const shinW = _q2.setFromRotationMatrix(_m1.makeBasis(tx, sy, sz));
+  S.flex = Math.acos(clamp(ty.dot(sy), -1, 1));
+  // thigh rotation relative to the pelvis: swing (where it points) and twist (roll about itself)
+  const rel = _q3.copy(pelvisQ).invert().multiply(thighW);
+  swingTwist(rel, AY, _qs, _qt);
+  L.thigh.quaternion.copy(rel);
+  L.hipHalf.quaternion.copy(_qI).slerp(_qs, 0.5);           // the hip crease takes half the swing
+  L.hipHalf.scale.z = mitre(Math.acos(clamp(new V3(0,-1,0).applyQuaternion(_qs).y*-1, -1, 1)));
+  L.tw0.quaternion.copy(_qs).multiply(_q3.copy(_qI).slerp(_qt, 0.25));
+  L.tw1.quaternion.copy(_qs).multiply(_q3.copy(_qI).slerp(_qt, 0.65));
+  // knee: hinge about local X. The half helper turns half the angle and is stretched by the mitre factor
+  L.shin.quaternion.copy(thighW).invert().multiply(shinW);
+  L.kneeHalf.quaternion.setFromAxisAngle(AX, S.flex/2);
+  L.kneeHalf.scale.z = mitre(S.flex);
+  // ankle: foot relative to shin, clamped to a human range (dorsiflexion 40°, plantarflexion 55°, ±25° roll, ±30° turn)
+  const fr = S.ankleRel.copy(shinW).invert().multiply(footQ);
+  _e1.setFromQuaternion(fr, 'YXZ');
+  S.dorsi = -_e1.x;
+  _e1.x = clamp(_e1.x, -40/DEG, 55/DEG); _e1.z = clamp(_e1.z, -0.44, 0.44); _e1.y = clamp(_e1.y, -0.52, 0.52);
+  L.foot.quaternion.setFromEuler(_e1);
+  L.toe.quaternion.setFromAxisAngle(AX, -toe);
+}
+/* Spine: a wanted chest rotation relative to the pelvis is spread over the three spine bones.
+   Bend (pitch) goes mostly to the lower back, twist mostly to the thoracic spine, side bend evenly.        */
+const SPINE_SHARE = { pitch:[0.38, 0.34, 0.28], yaw:[0.22, 0.34, 0.44], roll:[0.34, 0.33, 0.33] };
+function poseSpine(pitch, yaw, roll) {
+  [spine1, spine2, spine3].forEach((b, i) => b.quaternion.setFromEuler(_e1.set(pitch*SPINE_SHARE.pitch[i], yaw*SPINE_SHARE.yaw[i], roll*SPINE_SHARE.roll[i], 'YXZ')));
+}
+// clavicle: elevation (shrug, + raises the shoulder) and protraction (+ brings the shoulder forward)
+function poseClavicle(i, elev, prot) {
+  const s = SIDES[i];
+  clav[i].quaternion.setFromEuler(_e1.set(0, -s*prot, s*elev, 'YXZ'));
+}
+// arm space for this frame: chest rotation at the shoulder joint, mirrored for the right arm
+const _clavInv = new M4(), _chestQ = new Quat(), _sh = new V3(), _one = new V3(1,1,1);
+function armSpace(A, X) {
+  worldQ(spine3, _chestQ);
+  _sh.copy(A.shoulder0).sub(bw.get(A.clav)).applyMatrix4(A.clav.matrixWorld);
+  X.M.compose(_sh, _chestQ, _one).multiply(A.mirror);
+  X.rootBase.copy(_clavInv.copy(A.clav.matrixWorld).invert()).multiply(X.M);
+  return X;
+}
+
 /* ═══════════════════════════════ §4  BODY SURFACE (signed distance fields) ═══════════════════════════════
    The torso, pelvis, neck, head, legs and feet are distance fields: ellipsoids and tapered capsules
    ("round cones"), joined with a smooth minimum so every junction gets a fillet. The shoulder stub is the arm
@@ -467,7 +774,7 @@ function torsoSDF(x, y, z) {
   d = smin(d, sdRC(x,y,z, [0,1.400,-0.020], [0,1.590,-0.002], 0.058, 0.051), 0.035);      // neck
   // shoulder stub: the arm tube's own field, a hair inside it, cut off well inside the arm
   const ax = x - J.shoulder[0], ay = y - J.shoulder[1], az = z - J.shoulder[2];
-  let stub = Math.max(armTubeSDF(ax, ay, az) + 0.0015, ax - 0.10);
+  let stub = Math.max(armTubeSDF(ax, ay, az) + 0.0008 + 0.02*smooth(0.09, 0.14, ax), ax - 0.14);
   stub = Math.max(stub, -0.07 - ax);
   d = smin(d, stub, 0.045);
   return d;
@@ -626,18 +933,26 @@ function legWeights(x, y, z, m) {
 }
 function bodyWeights(x, y, z) {
   W.clear();
-  const L = legs[x >= 0 ? 0 : 1], ax = Math.abs(x);
+  // Each side is painted as if it were the left one; near the midline both sides are evaluated and cross-faded,
+  // so the weights are continuous across x = 0 (otherwise the skin between the legs would tear).
+  const sL = smooth(-0.025, 0.025, x);
+  if (sL > 0) sideWeights(Math.abs(x), y, z, 0, sL);
+  if (sL < 1) sideWeights(Math.abs(x), y, z, 1, 1 - sL);
+  return W;
+}
+function sideWeights(ax, y, z, side, m) {
+  const L = legs[side], x = side === 0 ? ax : -ax;
   // hip crease: a rigid fold at the front (groin), a wide blend at the back (the buttock stretches over the
   // hip as the thigh flexes), in between at the side
   const rx = ax - J.hip[0], rz = z - J.hip[2], r = Math.hypot(rx, rz) || 1e-6, kf = (1 + rz/r)/2;
   const c = lerp(0.835, 0.882, kf), w = lerp(0.115, 0.018, kf*kf*(3-2*kf)), u = c - y;
   let leg = smooth(0, w, u), half = 1 - (1 - smooth(-w, 0, u)) - leg;
-  const med = smooth(0.004, 0.035, ax);                          // the crotch stays with the pelvis
+  // the crotch, at the midline above the legs' split, stays with the pelvis
+  const med = Math.max(smooth(0.0, 0.03, ax), smooth(0.83, 0.77, y));
   leg *= med; half *= med;
-  if (1 - leg - half > 1e-4) shoulderWeights(x, y, z, 1 - leg - half, spineWeights);
-  wAdd(boneIndex(L.hipHalf), half);
-  if (leg > 1e-4) legWeights(x, y, z, leg);
-  return W;
+  if (1 - leg - half > 1e-4) shoulderWeights(x, y, z, (1 - leg - half)*m, spineWeights);
+  wAdd(boneIndex(L.hipHalf), half*m);
+  if (leg > 1e-4) legWeights(x, y, z, leg*m);
 }
 function top4(map) {
   const w = [...map.entries()].sort((a, b) => b[1]-a[1]).slice(0, 4), sum = w.reduce((a, e) => a+e[1], 0) || 1;
@@ -668,7 +983,7 @@ function buildFigure(Q) {
     for (let m = 0; m < MORPH.N; m++) { const d = mo && mo[m]; morph[m].push(d ? d[0] : 0, d ? d[1] : 0, d ? d[2] : 0); }
   };
   // ── body
-  const body = surfaceNets(bodySDF, [-0.31, -0.004, -0.17], [0.31, 1.775, 0.245], Q.bodyH);
+  const body = surfaceNets(bodySDF, [-0.34, -0.004, -0.17], [0.34, 1.775, 0.245], Q.bodyH);
   for (let v = 0; v < body.pos.length/3; v++) {
     const x = body.pos[3*v], y = body.pos[3*v+1], z = body.pos[3*v+2], nx = body.nrm[3*v], ny = body.nrm[3*v+1], nz = body.nrm[3*v+2];
     const mo = {}, side = x >= 0 ? 0 : 1, ax = Math.abs(x);
@@ -690,7 +1005,7 @@ function buildFigure(Q) {
       p.set(AG.pos[3*v], AG.pos[3*v+1], AG.pos[3*v+2]);
       const xa = p.x; p.applyMatrix4(A.bindM);
       let wts;
-      if (xa < 0.075) { W.clear(); shoulderWeights(p.x, p.y, p.z, 1, spineWeights); wts = top4(W); }      // the buried start of the tube
+      if (xa < 0.16) { W.clear(); shoulderWeights(p.x, p.y, p.z, 1, spineWeights); wts = top4(W); }      // the buried start of the tube
       else { wts = []; for (let k = 0; k < 4; k++) if (AG.sw[4*v+k] > 0) wts.push([A.map(AG.si[4*v+k]), AG.sw[4*v+k]]); }
       const mo = {};
       d.set(AG.m0[3*v], AG.m0[3*v+1], AG.m0[3*v+2]).applyMatrix4(A.mirror); if (d.lengthSq() > 0) mo[MORPH.bicep[A.i]] = d.toArray();
@@ -782,13 +1097,73 @@ addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camer
 
 const VIEWS = {
   front:[[0, 1.0, 3.6],[0, 0.9, 0]], side:[[3.6, 1.0, 0],[0, 0.9, 0]], threeq:[[2.4, 1.4, 2.7],[0, 0.9, 0]],
-  face:[[0.35, 1.68, 0.75],[0, 1.62, 0]], hand:[[1.0, 1.5, 0.7],[0.8, 1.42, 0]], feet:[[0.5, 0.35, 1.0],[0, 0.1, 0]],
+  face:[[0.35, 1.68, 0.75],[0, 1.62, 0]], elbow:[[0.55, 1.45, 0.6],[0.25, 1.3, 0.05]], kneeS:[[0.9, 0.5, 0.3],[0.1, 0.4, 0.1]], footF:[[0.7, 0.55, -0.3],[0.1, 0.55, -0.3]], under:[[0.5, 0.2, 0.9],[0, 0.45, -0.2]], armpit:[[0.9, 1.25, 0.5],[0.15, 1.3, 0]], back:[[0.4, 1.0, -3.6],[0, 0.9, 0]], hipR:[[-1.3, 0.55, 0.9],[0, 0.5, -0.1]], hipL:[[1.3, 0.55, -0.9],[0, 0.5, -0.1]], shoulder:[[1.1, 1.55, 1.1],[0.15, 1.35, 0]], shoulderB:[[0.9, 1.3, -1.1],[0.15, 1.35, 0]], low:[[0.8, 0.3, 1.6],[0, 0.6, 0]], hand:[[1.0, 1.5, 0.7],[0.8, 1.42, 0]], feet:[[0.5, 0.35, 1.0],[0, 0.1, 0]],
 };
 function shotView(v) {
   if (v.startsWith('mat:')) { figure.material = { skin:skinMat, xray:xrayMat, weights:weightMat }[v.slice(4)]; return; }
+  if (v.startsWith('pose:')) { testPose(v.slice(5)); return; }
   const c = VIEWS[v]; if (!c) return;
   camera.position.fromArray(c[0]); controls.target.fromArray(c[1]); controls.update();
 }
+/* ── body pose application (filled by the solvers each frame) ── */
+const armX = arms.map(() => ({ M:new M4(), rootBase:new M4(), morph:null }));
+const body = {
+  pelvisPos:new V3().fromArray(J.pelvis), pelvisQ:new Quat(), spine:[0,0,0], neckQ:new Quat(), headQ:new Quat(),
+  clav:[[0,0],[0,0]],
+  feet:[0,1].map(i => ({ ankle:new V3().fromArray(mirrorX(J.ankle, SIDES[i])), q:new Quat(), toe:0, pole:new V3(0,0,1) })),
+};
+function applyBody(dt) {
+  pelvis.position.copy(body.pelvisPos); pelvis.quaternion.copy(body.pelvisQ);
+  poseSpine(...body.spine);
+  neck.quaternion.copy(body.neckQ); head.quaternion.copy(body.headQ);
+  poseClavicle(0, ...body.clav[0]); poseClavicle(1, ...body.clav[1]);
+  pelvis.updateMatrixWorld(true);
+  for (let i = 0; i < 2; i++) { const F = body.feet[i]; poseLeg(i, F.ankle, F.pole, F.q, F.toe, body.pelvisQ); }
+  pelvis.updateMatrixWorld(true);
+  for (let i = 0; i < 2; i++) { armX[i].morph = figure.morphTargetInfluences; armSpace(arms[i], armX[i]); arms[i].solve(dt, armX[i]); }
+  pelvis.updateMatrixWorld(true);
+}
+// test poses for checking the skin at extremes (Phase 2): pelvis height, spine pitch, hand targets…
+function testPose(kind) {
+  const P0 = new V3().fromArray(J.pelvis);
+  body.pelvisPos.copy(P0); body.pelvisQ.identity(); body.spine = [0,0,0];
+  for (let i = 0; i < 2; i++) { const F = body.feet[i]; F.ankle.fromArray(mirrorX(J.ankle, SIDES[i])); F.q.identity(); F.toe = 0; F.pole.set(0,0,1); body.clav[i] = [0,0]; }
+  const m = figure.morphTargetInfluences; m.fill(0);
+  const armPose = () => {
+    // targets are written in each arm's own space (x out to the side, y up, z forward) and mapped to world
+    for (let i = 0; i < 2; i++) {
+      const A = arms[i], P = A.P, M = armX[i].M, at = (x, y, z) => P.tgt.set(x, y, z).applyMatrix4(M);
+      const pole = (x, y, z) => P.pole.set(x, y, z).transformDirection(M), palm = (x, y, z) => P.palm.set(x, y, z).transformDirection(M);
+      P.palmAt = false; P.surfY = null; P.orb = false; P.tgtW = 9; P.wflex = 0; P.wdev = 0; P.tense = 0;
+      A.shapes.relax(0);
+      if (kind === 'rest' || kind === 'sit') { at(0.09, -0.55, 0.03); pole(0.3, -0.1, -1); palm(-1, 0, 0.1); }
+      if (kind === 'up') { at(0.07, 0.555, 0.03); pole(0.6, 0.2, -0.5); palm(-1, 0, 0.3); body.clav[i] = [0.35, 0.05]; }
+      if (kind === 'flex') { at(0.03, -0.05, 0.13); pole(0.2, -1, -0.2); palm(-0.2, 0, -1); A.shapes.fist(1); P.tense = 1; }
+      if (kind === 'squat') { at(0.0, -0.05, 0.53); pole(0.4, -1, 0); palm(-1, -0.4, 0); body.clav[i] = [0.1, 0.15]; }
+      if (kind === 'forward') { at(0.0, 0.0, 0.55); pole(0.5, -1, 0); palm(0, -1, 0); }
+      if (kind === 'across') { at(-0.25, -0.05, 0.4); pole(0.5, -1, 0); palm(-1, 0, 0); }
+      if (kind === 'back') { at(0.15, -0.35, -0.3); pole(0.5, 0, 1); palm(0, 0, -1); }
+    }
+  };
+  if (kind === 'squat') {
+    body.pelvisPos.set(0, 0.47, -0.17); body.spine = [0.55, 0, 0]; body.pelvisQ.setFromAxisAngle(AX, 0.32);
+    for (let i = 0; i < 2; i++) { const F = body.feet[i]; F.ankle.x = SIDES[i]*0.15; F.q.setFromAxisAngle(AY, SIDES[i]*0.3); F.pole.set(SIDES[i]*0.45, 0, 1); }
+    m[MORPH.quad[0]] = m[MORPH.quad[1]] = 1;
+  }
+  if (kind === 'flex') {                                       // stand on the right leg, left heel pulled up to the buttock
+    body.pelvisPos.x = -0.05;
+    const F = body.feet[0]; F.ankle.set(0.1, 0.62, -0.30); F.q.setFromAxisAngle(AX, 1.0); F.pole.set(0, 0, 1);
+    m[MORPH.calf[0]] = 1;
+  }
+  if (kind === 'sit') {
+    body.pelvisPos.set(0, 0.57, -0.38); body.pelvisQ.setFromAxisAngle(AX, -0.1); body.spine = [0.05, 0, 0];
+    for (let i = 0; i < 2; i++) body.feet[i].ankle.z = 0.04;
+  }
+  applyBody(1/60); armPose();
+  for (const A of arms) A.settle();
+  for (let k = 0; k < 120; k++) { applyBody(1/60); armPose(); }
+}
+
 document.getElementById('loading')?.remove();
 function frame() {
   controls.update();
@@ -796,7 +1171,7 @@ function frame() {
   requestAnimationFrame(frame);
 }
 frame();
-window.rig = { ready:true, geo, figure, bones, arms, legs, shotView, scene, camera, controls, THREE };
+window.rig = { ready:true, geo, figure, bones, arms, legs, shotView, scene, camera, controls, THREE, testPose, body, applyBody };
 </script>
 </body>
 </html>
