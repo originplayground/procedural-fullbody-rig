@@ -1,5 +1,8 @@
 # Notes: the original arm rig (before the full-body upgrade)
 
+The current full-body architecture is described in [README.md](README.md). This file is the map of the original
+arm that was made before any change, and the plan that followed from it.
+
 These notes describe `index.html` as it was before the full-body work (commit `32f8ce7`). They are a map of what is
 reused, so the new code can wrap the arm and hand systems without rewriting them.
 

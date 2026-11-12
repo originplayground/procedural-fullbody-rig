@@ -1708,8 +1708,9 @@ function copyWish(o, a) { lerpWish(o, a, a, 0); return o; }
    ground space is attached to the root (x to the figure's left, y up from the floor, z forward).          */
 const armPt = (i, x, y, z, out) => out.set(x, y, z).applyMatrix4(armX[i].M);
 const armDir = (i, x, y, z, out) => out.set(x, y, z).transformDirection(armX[i].M);
-const groundPt = (x, y, z, out, base = root) => out.copy(base.pos).addScaledVector(leftOf(base.yaw, _v1), x).addScaledVector(fwdOf(base.yaw, _v2), z).setY(y);
-const groundDir = (x, y, z, out, base = root) => out.set(0, y, 0).addScaledVector(leftOf(base.yaw, _v1), x).addScaledVector(fwdOf(base.yaw, _v2), z).normalize();
+const _gL = new V3(), _gF = new V3();         // private scratch: callers may pass _v1/_v2 as the output
+const groundPt = (x, y, z, out, base = root) => out.copy(base.pos).addScaledVector(leftOf(base.yaw, _gL), x).addScaledVector(fwdOf(base.yaw, _gF), z).setY(y);
+const groundDir = (x, y, z, out, base = root) => out.set(0, y, 0).addScaledVector(leftOf(base.yaw, _gL), x).addScaledVector(fwdOf(base.yaw, _gF), z).normalize();
 // arms hanging at the sides, swinging forward by `swing` radians, with a slow drift
 function hangArms(w, t, swing = [0, 0], drift = 1) {
   for (let i = 0; i < 2; i++) {
@@ -2031,7 +2032,7 @@ settleAll();
 /* ═══════════════════════════════ §12  DEBUG VIEW ═══════════════════════════════
    Skeleton (octahedra along each bone), the finger contact capsules, and foot planting: a ring under each foot
    (green planted, amber swinging), the support polygon, and the centre of mass with its ground projection
-   (green inside the polygon, red outside).                                                                  */
+   (green inside the polygon; amber outside it while walking, which is normal; red outside it while standing). */
 const dbg = { on:false, group:new THREE.Group(), bones:[], caps:[] };
 scene.add(dbg.group); dbg.group.visible = false;
 {
@@ -2114,7 +2115,8 @@ function updateDebug() {
   for (let i = 0; i < 12; i++) { const p = supportPts[Math.min(i, supportPts.length - 1)] || root.pos; pa.setXYZ(i, p.x, 0.004, p.z); }
   pa.needsUpdate = true; dbg.poly.geometry.setDrawRange(0, supportPts.length);
   const inside = supportPts.length >= 3 && pointInPoly(com.x, com.z, supportPts);
-  dbg.com.material.color.set(inside || MV.out.seated > 0.5 ? 0x4ade80 : 0xf87171);
+  // green: over the support polygon; amber: outside it while walking (normal in single support); red: outside it standing
+  dbg.com.material.color.set(inside || MV.out.seated > 0.5 ? 0x4ade80 : gait.on ? 0xfbbf24 : 0xf87171);
   dbg.com.position.copy(com); dbg.comG.position.set(com.x, 0.004, com.z);
   const la = dbg.comL.geometry.attributes.position; la.setXYZ(0, com.x, com.y, com.z); la.setXYZ(1, com.x, 0.004, com.z); la.needsUpdate = true; dbg.comL.computeLineDistances();
 }
@@ -2241,8 +2243,7 @@ let paused = false, fpsN = 0, fpsT = 0, hudT = 0;
 function frame() {
   if (directing) { requestAnimationFrame(frame); return; }
   const raw = clock.getDelta(), dt = Math.min(raw, 0.05);
-  if (!paused) update(dt);
-  followCamera(dt);
+  if (!paused) { update(dt); followCamera(dt); }
   controls.update();
   updateDebug();
   renderer.render(scene, camera);
