@@ -497,8 +497,8 @@ function makeArm(side) {
   const Qu = new Quat(), Qf = new Quat(), Qt = new Quat(), Qh = new Quat(), q1 = new Quat(), q2 = new Quat(), eul = new THREE.Euler();
   const qSw = new Quat(), qTw = new Quat(), qHalf = new Quat(), qHalfInv = new Quat(), qI = new Quat();
   const vf = new V3(), D = new V3(), tv = new V3(), tv2 = new V3(), palmPoint = new V3(0.1,-0.5,0.1);
-  const Pa = { tgt:new V3(), pole:new V3(), palm:new V3() };
-  const st = { flex:0, up:new V3(0,1,0), oy:0, M:new M4(), Minv:new M4(), rootBase:new M4(), surfY:null };
+  const Pa = { tgt:new V3(), pole:new V3(), palm:new V3() }, plane = new V3();     // plane: the elbow plane's normal direction, kept between frames
+  const st = { flex:0, up:new V3(0,1,0), oy:0, M:new M4(), Minv:new M4(), rootBase:new M4(), surfY:null, pa:Pa.tgt, spr:tgtS };
 
   /* ───────── hand collisions (as before) ─────────
      Every finger bone is a capsule. Colliders: the palm, the other fingers (for the thumb), the ball and a support
@@ -613,12 +613,34 @@ function makeArm(side) {
 
     // ── analytic two-bone IK with a pole vector
     shS.get(S);
-    tgtS.get(toT).sub(S); const dist = toT.length() || 1e-6; dir.copy(toT).divideScalar(dist);
+    tgtS.get(toT).sub(S);
+    // The hand target (and its spring) is kept outside a 30 cm sphere around the shoulder: a target travelling past
+    // the joint slides round it instead of through it, where the arm's direction (and the elbow plane) would spin.
+    const R0 = 0.30, tl = toT.length();
+    if (tl < R0) {
+      if (tl < 1e-3) toT.set(0.15, -1, 0.1);
+      toT.setLength(R0); dir.copy(toT).normalize();
+      for (let k = 0; k < 3; k++) { const c = tgtS.s[k]; c.x = S.getComponent(k) + toT.getComponent(k); }
+      const vin = tgtS.s[0].v*dir.x + tgtS.s[1].v*dir.y + tgtS.s[2].v*dir.z;
+      if (vin < 0) for (let k = 0; k < 3; k++) tgtS.s[k].v -= vin*dir.getComponent(k);      // drop the inward velocity
+    }
+    const dist = toT.length() || 1e-6; dir.copy(toT).divideScalar(dist);
     const d = clamp(dist, 0.18, L1+L2-0.004);
     shS.to(tv.copy(dir).multiplyScalar(0.03*smooth(0.38,0.58,dist)).add(tv2.set(0, 0.018*Math.max(0,dir.y), 0)));  // shoulder leans into long reaches
     poleS.get(perp).normalize(); perp.addScaledVector(dir, -perp.dot(dir));
-    if (perp.lengthSq() < 1e-5) perp.set(0.3,-1,0.2).addScaledVector(dir, -tv.set(0.3,-1,0.2).dot(dir));
-    perp.normalize();
+    // The elbow plane is carried over from the last frame and turned toward the pole, at most 12 rad/s, and only as
+    // far as the pole can be trusted: as the pole lines up with the arm its projection shrinks and its direction
+    // becomes noise. So the elbow can never spin, whatever path the hand target takes.
+    const pl = st.perpLen = perp.length(); st.dist = dist;
+    plane.addScaledVector(dir, -plane.dot(dir));
+    if (plane.lengthSq() < 1e-6) plane.copy(pl > 1e-4 ? perp : tv.set(0.3, -1, -0.4).addScaledVector(dir, -dir.dot(tv)));
+    plane.normalize();
+    if (pl > 1e-4) {
+      perp.divideScalar(pl);
+      const ang = Math.atan2(tv.crossVectors(plane, perp).dot(dir), plane.dot(perp)), lim = 12*dt;
+      plane.applyAxisAngle(dir, clamp(ang*smooth(0.02, 0.25, pl), -lim, lim));
+    }
+    perp.copy(plane);
     const x = (L1*L1 - L2*L2 + d*d)/(2*d), h = Math.sqrt(Math.max(0, L1*L1 - x*x));
     E.copy(S).addScaledVector(dir, x).addScaledVector(perp, h);
     Wp.copy(S).addScaledVector(dir, d);
@@ -992,7 +1014,8 @@ function spineWeights(x, y, z, m) {
   let sh = [[boneIndex(pelvis), 1-t1], [boneIndex(spine1), t1-t2], [boneIndex(spine2), t2-t3], [boneIndex(spine3), t3*(1-n4)],
             [boneIndex(neck), n4*(1-t5)], [boneIndex(head), t5]];
   // clavicle: the top of the shoulder girdle, from the root of the neck out to the shoulder
-  const cl = smooth(0.05, 0.13, ax)*smooth(1.30, 1.40, y)*(1 - t5);
+  // (a wide band: elevating the clavicle then stretches the trapezius smoothly instead of creasing it)
+  const cl = smooth(0.03, 0.17, ax)*smooth(1.25, 1.42, y)*(1 - t5);
   const ci = boneIndex(clav[x >= 0 ? 0 : 1]);
   for (const [b, w] of sh) wAdd(b, w*(1-cl)*m);
   wAdd(ci, cl*m);
@@ -1197,7 +1220,7 @@ addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camer
 
 const VIEWS = {
   front:[[0, 1.0, 3.6],[0, 0.9, 0]], side:[[3.6, 1.0, 0],[0, 0.9, 0]], threeq:[[2.4, 1.4, 2.7],[0, 0.9, 0]],
-  face:[[0.35, 1.68, 0.75],[0, 1.62, 0]], elbow:[[0.55, 1.45, 0.6],[0.25, 1.3, 0.05]], kneeS:[[0.9, 0.5, 0.3],[0.1, 0.4, 0.1]], footF:[[0.7, 0.55, -0.3],[0.1, 0.55, -0.3]], under:[[0.5, 0.2, 0.9],[0, 0.45, -0.2]], armpit:[[0.9, 1.25, 0.5],[0.15, 1.3, 0]], back:[[0.4, 1.0, -3.6],[0, 0.9, 0]], hipR:[[-1.3, 0.55, 0.9],[0, 0.5, -0.1]], hipL:[[1.3, 0.55, -0.9],[0, 0.5, -0.1]], shoulder:[[1.1, 1.55, 1.1],[0.15, 1.35, 0]], shoulderB:[[0.9, 1.3, -1.1],[0.15, 1.35, 0]], low:[[0.8, 0.3, 1.6],[0, 0.6, 0]], hand:[[1.0, 1.5, 0.7],[0.8, 1.42, 0]], feet:[[0.5, 0.35, 1.0],[0, 0.1, 0]],
+  face:[[0.35, 1.68, 0.75],[0, 1.62, 0]], elbow:[[0.55, 1.45, 0.6],[0.25, 1.3, 0.05]], kneeS:[[0.9, 0.5, 0.3],[0.1, 0.4, 0.1]], footF:[[0.7, 0.55, -0.3],[0.1, 0.55, -0.3]], under:[[0.5, 0.2, 0.9],[0, 0.45, -0.2]], armpit:[[0.9, 1.25, 0.5],[0.15, 1.3, 0]], back:[[0.4, 1.0, -3.6],[0, 0.9, 0]], hipR:[[-1.3, 0.55, 0.9],[0, 0.5, -0.1]], hipL:[[1.3, 0.55, -0.9],[0, 0.5, -0.1]], shoulder:[[1.1, 1.55, 1.1],[0.15, 1.35, 0]], shoulderB:[[0.9, 1.3, -1.1],[0.15, 1.35, 0]], backHi:[[0.35, 1.55, -1.25],[0, 1.35, 0]], low:[[0.8, 0.3, 1.6],[0, 0.6, 0]], hand:[[1.0, 1.5, 0.7],[0.8, 1.42, 0]], feet:[[0.5, 0.35, 1.0],[0, 0.1, 0]],
 };
 function shotView(v) {
   if (v.startsWith('mat:')) { figure.material = { skin:skinMat, xray:xrayMat, weights:weightMat }[v.slice(4)]; return; }
@@ -1337,7 +1360,7 @@ function testPose(kind) {
       P.palmAt = false; P.surfY = null; P.orb = false; P.tgtW = 9; P.wflex = 0; P.wdev = 0; P.tense = 0;
       HAND.relax(P, 0);
       if (kind === 'rest' || kind === 'sit') { at(0.09, -0.55, 0.03); pole(0.3, -0.1, -1); palm(-1, 0, 0.1); }
-      if (kind === 'up') { at(0.07, 0.555, 0.03); pole(0.6, 0.2, -0.5); palm(-1, 0, 0.3); body.clav[i] = [0.35, 0.05]; }
+      if (kind === 'up') { at(0.07, 0.555, 0.03); pole(0.6, 0.2, -0.5); palm(-1, 0, 0.3); body.clav[i] = [0.24, 0.05]; }
       if (kind === 'flex') { at(0.03, -0.05, 0.13); pole(0.2, -1, -0.2); palm(-0.2, 0, -1); HAND.fist(P, 1); P.tense = 1; }
       if (kind === 'squat') { at(0.0, -0.05, 0.53); pole(0.4, -1, 0); palm(-1, -0.4, 0); body.clav[i] = [0.1, 0.15]; }
       if (kind === 'forward') { at(0.0, 0.0, 0.55); pole(0.5, -1, 0); palm(0, -1, 0); }
@@ -1598,7 +1621,7 @@ function solveBody(dt, w) {
   // ── clavicles: shrug when the hand goes above the shoulder, come forward when it reaches ahead
   for (let i = 0; i < 2; i++) {
     const t = _v1.copy(arms[i].P.tgt).applyMatrix4(_m1.copy(armX[i].M).invert());
-    ch.clavE[i].t = 0.30*smooth(-0.05, 0.45, t.y) + (w.shrug ? w.shrug[i] : 0);
+    ch.clavE[i].t = 0.24*smooth(-0.05, 0.45, t.y) + (w.shrug ? w.shrug[i] : 0);
     ch.clavP[i].t = 0.18*smooth(0.15, 0.55, t.z) - 0.08*smooth(0.0, 0.3, -t.z);
     body.clav[i] = [ch.clavE[i].x, ch.clavP[i].x];
   }
@@ -1645,8 +1668,24 @@ const armWish = () => ({ tgt:new V3(), pole:new V3(0,-0.2,-1), palm:new V3(-1,0,
 const newWish = () => ({ speed:0, turn:0, faceYaw:null, stance:{ width:0.105, toeOut:0.13, fwd:0 },
   pelvis:{ h:0, x:0, z:0, pitch:0, yaw:0, roll:0 }, spine:{ pitch:0, yaw:0, roll:0 }, balance:1, bias:0,
   look:null, heel:[0,0], shrug:[0,0], plantLock:false, seated:0, arms:[armWish(), armWish()] });
-function lerpArm(o, a, b, k) {
-  o.tgt.lerpVectors(a.tgt, b.tgt, k); o.pole.lerpVectors(a.pole, b.pole, k); o.palm.lerpVectors(a.palm, b.palm, k);
+// Hand targets are blended around the shoulder, not along a straight line: direction and distance are interpolated
+// separately (in arm space), so a hand going from overhead to hanging swings out to the side instead of passing
+// through the shoulder (where the arm's direction, and so the elbow plane, would flip).
+const _bA = new V3(), _bB = new V3(), _bQ = new Quat(), _bM = new M4();
+function lerpTarget(i, out, a, b, k) {
+  if (k <= 0) return out.copy(a); if (k >= 1) return out.copy(b);
+  _bM.copy(armX[i].M).invert();
+  _bA.copy(a).applyMatrix4(_bM); _bB.copy(b).applyMatrix4(_bM);
+  const la = _bA.length(), lb = _bB.length();
+  if (la < 1e-4 || lb < 1e-4) return out.lerpVectors(a, b, k);
+  _bA.divideScalar(la); _bB.divideScalar(lb);
+  if (_bA.dot(_bB) < -0.97) _bQ.setFromAxisAngle(AZ, Math.atan2(_bB.x - _bA.x, _bA.y - _bB.y) > 0 ? PI : -PI);   // opposite: swing through the side
+  else _bQ.setFromUnitVectors(_bA, _bB);
+  _bQ.slerp(_qI, 1 - k);
+  return out.copy(_bA.applyQuaternion(_bQ).multiplyScalar(lerp(la, lb, k))).applyMatrix4(armX[i].M);
+}
+function lerpArm(o, a, b, k, i) {
+  lerpTarget(i, o.tgt, a.tgt, b.tgt, k); o.pole.lerpVectors(a.pole, b.pole, k); o.palm.lerpVectors(a.palm, b.palm, k);
   for (const key of ['tgtW', 'wflex', 'wdev', 'tense', 'roll']) o[key] = lerp(a[key], b[key], k);
   for (let f = 0; f < 5; f++) { for (let j = 0; j < 3; j++) o.curl[f][j] = lerp(a.curl[f][j], b.curl[f][j], k); o.spread[f] = lerp(a.spread[f], b.spread[f], k); }
   // a target given as "palm" vs "wrist" differs by the palm offset (~9 cm); blend the flag at the midpoint
@@ -1661,7 +1700,7 @@ function lerpWish(o, a, b, k) {
   o.look = (a.look || b.look) ? (o.look || new V3()).lerpVectors(a.look || ahead, b.look || ahead, k) : null;
   o.faceYaw = (a.faceYaw == null && b.faceYaw == null) ? null : root.yaw + lerp(angDiff(a.faceYaw ?? root.yaw, root.yaw), angDiff(b.faceYaw ?? root.yaw, root.yaw), k);
   o.plantLock = k < 0.5 ? a.plantLock : b.plantLock;
-  for (let i = 0; i < 2; i++) lerpArm(o.arms[i], a.arms[i], b.arms[i], k);
+  for (let i = 0; i < 2; i++) lerpArm(o.arms[i], a.arms[i], b.arms[i], k, i);
 }
 function copyWish(o, a) { lerpWish(o, a, a, 0); return o; }
 
@@ -1718,8 +1757,10 @@ function driveMarker(dt, k = 4) { marker.pos.lerp(marker.goal, 1 - Math.exp(-dt*
 const viewer = () => camera.position.clone();
 // how far a hand target lies beyond comfortable reach from the (upright) shoulder: used to bend at the hips and knees
 function reachLean(i, p) {
-  const sh = groundPt(SIDES[i]*0.178, 1.425, 0, new V3()), d = p.distanceTo(sh), low = smooth(1.15, 0.55, p.y);
-  return { pitch:clamp((d - 0.50)*2.0, 0, 0.75)*smooth(1.5, 1.0, p.y) + 0.35*low, knee:-0.30*low, yaw:0 };
+  // bend at the hips only as far as the reach needs; low targets are reached mostly by bending the knees, so the
+  // shoulder never ends up right on top of the target (where the arm would have no clear direction)
+  const sh = groundPt(SIDES[i]*0.178, 1.425, 0, new V3()), d = p.distanceTo(sh), low = smooth(1.05, 0.6, p.y);
+  return { pitch:clamp((d - 0.55)*1.6, 0, 0.6)*smooth(1.5, 1.0, p.y) + 0.12*low, knee:-0.36*low, yaw:0 };
 }
 // turn the chest toward a point (fraction of the horizontal angle, limited)
 function chestToward(w, p, k = 0.5, lim = 0.5) {
@@ -1757,7 +1798,7 @@ MOVES.wave = {
   update(t, w) {
     hangArms(w, t);
     const i = 1, a = w.arms[i], up = smooth(0.0, 0.9, t), wv = 6.4, amp = 0.12*smooth(0.6, 1.3, t);
-    armPt(i, lerp(0.09, 0.27 + amp*Math.sin(t*wv), up), lerp(-0.548, 0.20 + 0.014*Math.cos(t*wv*2), up), lerp(0.035, 0.11, up), a.tgt);
+    lerpTarget(i, a.tgt, a.tgt, armPt(i, 0.27 + amp*Math.sin(t*wv), 0.20 + 0.014*Math.cos(t*wv*2), 0.11, _v1), up);
     armDir(i, 0.6, -1, -0.3, a.pole); armDir(i, lerp(-1, 0, up), 0.1, lerp(0.15, 1, up), a.palm);
     HAND.open(a, up); a.tgtW = 11; a.wflex = 0.12*up; a.wdev = -0.16*Math.cos(t*wv)*up*smooth(0.6, 1.3, t); a.tense = 0.1;
     w.look = viewer(); w.bias = 0.35*up; w.spine.roll = -0.05*up; w.spine.pitch = -0.02;
@@ -1774,7 +1815,7 @@ MOVES.point = {
     hangArms(w, t);
     const T = marker.pos, i = this.side = handFor(T, this.side), a = w.arms[i], k = smooth(0.1, 0.9, t);
     const sh = armPt(i, 0, 0, 0, new V3()), dir = new V3().subVectors(T, sh).normalize();
-    a.tgt.lerp(_v3.copy(sh).addScaledVector(dir, 0.535), k);
+    lerpTarget(i, a.tgt, a.tgt, _v3.copy(sh).addScaledVector(dir, 0.535), k);
     a.pole.set(0, -1, 0).addScaledVector(leftOf(root.yaw, _v1), SIDES[i]*0.6);
     a.palm.set(0, -1, 0).addScaledVector(leftOf(root.yaw, _v1), -SIDES[i]*0.4).normalize();
     HAND.point(a, k); a.tgtW = 8; a.wflex = 0; a.wdev = 0; a.tense = 0.3*k;
@@ -1788,6 +1829,7 @@ MOVES.reach = {
   enter() { this.side = 1; this.hold = 0.3; this.c = { pos:root.pos.clone(), yaw:root.yaw }; this.grip = 0; },
   update(t, w, dt) {
     if (!marker.dragging) { this.hold -= dt; if (this.hold <= 0 && marker.hold <= 0) {
+      this.c = { pos:root.pos.clone(), yaw:root.yaw };                // new goals are always in front of the body as it is now
       { const y = 0.9 + Math.random()*0.85, x = (-0.45 + Math.random()*0.9)*(0.6 + 0.4*smooth(0.9, 1.3, y));
         groundPt(x, y, 0.42 + Math.random()*0.22 + 0.18*smooth(1.15, 0.9, y), marker.goal, this.c); } this.hold = 3.3 + Math.random()*1.3; } }
     driveMarker(dt, 3.5);
@@ -1837,7 +1879,7 @@ MOVES.pick = {
     else              { goal.copy(to).addScaledVector(up, hover*smooth(7.1, 7.6, p)); on = 1 - smooth(7.5, 8.4, p); }
     if (p >= 2.15 && p < 6.8) { if (ball.held !== i) grab(i); } else if (ball.held === i) release();
     // blend from the hanging hand into the task (and back out at the end of the cycle)
-    a.tgt.lerp(goal, on); a.palmAt = on > 0.5; a.tgtW = 7;
+    lerpTarget(i, a.tgt, a.tgt, goal, on); a.palmAt = on > 0.5; a.tgtW = 7;
     a.palm.lerp(_v1.set(0, -1, 0).addScaledVector(fwdOf(root.yaw, _v2), 0.05), on); armDir(i, 0.7, -0.8, -0.3, _v1); a.pole.lerp(_v1, on);
     if (on > 0.02) { HAND.grip(_tmpHand, g); for (let f = 0; f < 5; f++) { for (let j = 0; j < 3; j++) a.curl[f][j] = lerp(a.curl[f][j], _tmpHand.curl[f][j], on); a.spread[f] = lerp(a.spread[f], _tmpHand.spread[f], on); } a.roll = lerp(a.roll, _tmpHand.roll, on); }
     a.wflex = lerp(a.wflex, lerp(0.25, 0.08, g), on); a.tense = g*0.6;
@@ -1872,9 +1914,9 @@ MOVES.sit = {
     hangArms(w, t);
     for (let i = 0; i < 2; i++) {                // hands forward while lowering, then resting on the thighs
       const a = w.arms[i], fwdArm = Math.sin(PI*(p < 5.5 ? u : v))*0.8;
-      if (fwdArm > 0.01) { armPt(i, 0.07, -0.42, 0.28, _v1); a.tgt.lerp(_v1, fwdArm); }
+      if (fwdArm > 0.01) { armPt(i, 0.07, -0.42, 0.28, _v1); lerpTarget(i, a.tgt, a.tgt, _v1, fwdArm); }
       if (seat > 0.01) {
-        groundPt(SIDES[i]*0.11, 0.665, -0.05, _v1); a.tgt.lerp(_v1, seat); a.palmAt = seat > 0.5;
+        groundPt(SIDES[i]*0.11, 0.665, -0.05, _v1); lerpTarget(i, a.tgt, a.tgt, _v1, seat); a.palmAt = seat > 0.5;
         a.palm.lerp(_v2.set(0, -1, 0), seat); armDir(i, 0.5, 0.2, -1, _v3); a.pole.lerp(_v3, seat);
       }
     }
@@ -1898,7 +1940,7 @@ MOVES.squat = {
     w.stance.width = 0.15; w.stance.toeOut = 0.32; w.plantLock = d > 0.02;
     w.pelvis.h = -0.47*d; w.pelvis.z = -0.05*d; w.pelvis.pitch = 0.30*d; w.spine.pitch = 0.40*d; w.balance = 1;
     hangArms(w, t);
-    for (let i = 0; i < 2; i++) { const a = w.arms[i]; armPt(i, 0.03, -0.05, 0.52, _v1); a.tgt.lerp(_v1, smooth(0.05, 0.7, d)); armDir(i, 0.5, -1, 0, _v2); a.pole.lerp(_v2, d); a.palm.lerp(_v2.set(0, -1, 0), d); }
+    for (let i = 0; i < 2; i++) { const a = w.arms[i]; armPt(i, 0.03, -0.05, 0.52, _v1); lerpTarget(i, a.tgt, a.tgt, _v1, smooth(0.05, 0.7, d)); armDir(i, 0.5, -1, 0, _v2); a.pole.lerp(_v2, d); a.palm.lerp(_v2.set(0, -1, 0), d); }
     w.look = groundPt(0, 1.0 + 0.4*(1 - d), 3, new V3());
   },
 };
@@ -1913,7 +1955,7 @@ MOVES.stretch = {
     hangArms(w, t);
     for (let i = 0; i < 2; i++) {
       const a = w.arms[i];
-      armPt(i, 0.05, 0.555, 0.07, _v1); a.tgt.lerp(_v1, up);
+      armPt(i, 0.05, 0.555, 0.07, _v1); lerpTarget(i, a.tgt, a.tgt, _v1, up);
       armDir(i, 0.8, 0.3, -0.5, _v1); a.pole.lerp(_v1, up); armDir(i, -1, 0, 0.35, _v1); a.palm.lerp(_v1, up);
       HAND.open(_tmpHand, 1); for (let f = 0; f < 5; f++) { for (let j = 0; j < 3; j++) a.curl[f][j] = lerp(a.curl[f][j], _tmpHand.curl[f][j], up); a.spread[f] = lerp(a.spread[f], _tmpHand.spread[f], up); }
       a.wflex = lerp(a.wflex, -0.25, up); a.tense = 0.4*up;
